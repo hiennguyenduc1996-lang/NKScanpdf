@@ -413,7 +413,7 @@
     session.warpedFlat = null;
     await renderFilter();
   };
-  const PREVIEW_MAX = 1600;
+  const PREVIEW_MAX = 1200; // chỉ để xem trên màn hình; bản lưu vẫn làm nét đầy đủ ở luồng nền
 
   // ---------- Màn bộ lọc ----------
   const fc = $('filterCanvas');
@@ -426,14 +426,48 @@
     document.querySelectorAll('#filterBar .rb[data-f]').forEach((b) => b.classList.toggle('active', b.dataset.f === session.filter));
     $('filterFlat').classList.toggle('active', !!session.flatten);
     $('filterFlat').classList.toggle('hidden', !!session.card);
-    let src = session.warpedRaw;
-    if (session.flatten) src = session.warpedFlat || (session.warpedFlat = Scan.flatten(session.warpedRaw));
-    session.result = Scan.applyFilter(src, session.filter);
-    if (wantClean(session)) Scan.cleanBorder(session.result);
-    fc.width = session.result.width; fc.height = session.result.height;
-    fc.getContext('2d').drawImage(session.result, 0, 0);
+    const s = session;
+    let result = null;
+    const pw = previewWorker();
+    if (pw) { // làm ảnh xem trước ở luồng nền riêng -> màn hình không đứng
+      try {
+        const bmp = await createImageBitmap(s.warpedRaw);
+        const r = await new Promise((res) => {
+          const id = ++pvSeq; pvWait.set(id, res);
+          pw.postMessage({ id, job: { type: 'preview', bmp, flatten: !!s.flatten, filter: s.filter, clean: wantClean(s) } }, [bmp]);
+        });
+        if (r && r.bmp) {
+          result = Scan.makeCanvas(r.bmp.width, r.bmp.height);
+          result.getContext('2d').drawImage(r.bmp, 0, 0); r.bmp.close();
+        }
+      } catch (e) { pvOk = false; }
+    }
+    if (!result) { // dự phòng: làm trên trang
+      let src = s.warpedRaw;
+      if (s.flatten) src = s.warpedFlat || (s.warpedFlat = Scan.flatten(s.warpedRaw));
+      result = Scan.applyFilter(src, s.filter);
+      if (wantClean(s)) Scan.cleanBorder(result);
+    }
+    if (session !== s) { working = false; return; } // người dùng đã thoát trong lúc chờ
+    s.result = result;
+    fc.width = result.width; fc.height = result.height;
+    fc.getContext('2d').drawImage(result, 0, 0);
     show($('busy'), false);
     working = false;
+  }
+  // luồng nền riêng cho ảnh xem trước (không xếp hàng sau việc làm nét trang trước)
+  let pvWorker = null, pvOk = typeof Worker !== 'undefined' && typeof OffscreenCanvas !== 'undefined', pvSeq = 0;
+  const pvWait = new Map();
+  function previewWorker() {
+    if (!pvOk) return null;
+    if (!pvWorker) {
+      try {
+        pvWorker = new Worker('worker.js');
+        pvWorker.onmessage = (e) => { const r = pvWait.get(e.data.id); pvWait.delete(e.data.id); if (r) r(e.data); };
+        pvWorker.onerror = () => { pvOk = false; pvWorker = null; pvWait.forEach((r) => r(null)); pvWait.clear(); };
+      } catch (e) { pvOk = false; }
+    }
+    return pvWorker;
   }
   $('filterBar').onclick = (e) => {
     const b = e.target.closest('.rb'); if (!b || !session || working) return;

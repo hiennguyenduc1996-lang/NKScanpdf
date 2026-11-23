@@ -31,7 +31,8 @@ const Camera = (() => {
   const video = () => $('camVideo');
   const overlay = () => $('camOverlay');
 
-  const auto = () => localStorage.getItem('autoShot') !== '0';
+  // Tự chụp: mặc định TẮT, người dùng bật bằng nút "Tự chụp"
+  const auto = () => localStorage.getItem('autoShot') === '1';
   // Thẻ/CCCD: nhận theo mép thẻ; tài liệu: theo vùng chữ (mặc định) hoặc mép giấy (người dùng chọn)
   const detectMode = () => (localStorage.getItem('cardMode') === '1' ? 'paper' : (localStorage.getItem('detectMode') || 'text'));
 
@@ -82,22 +83,60 @@ const Camera = (() => {
   function loop(ts) {
     if (!opened) return;
     requestAnimationFrame(loop);
-    // nhịp dò tự giãn theo tốc độ máy (máy chậm -> dò thưa hơn, hình camera vẫn mượt)
-    if (paused || busy || ts - loopT < Math.max(110, cost * 2.5)) return;
+    // Mỗi lúc chỉ 1 lần dò; dò ở LUỒNG NỀN nên hình camera và nút bấm luôn mượt.
+    // Nếu máy không hỗ trợ luồng nền thì dò trên trang nhưng thưa hơn (theo tốc độ máy).
+    const gap = dw ? 120 : Math.max(150, cost * 4);
+    if (paused || busy || inflight || ts - loopT < gap) return;
     loopT = ts;
     const v = video();
     if (!v.videoWidth) return;
+    detectFrame(v);
+  }
+
+  // ---- dò khung (luồng nền) ----
+  let dw = null, dwOk = typeof Worker !== 'undefined' && typeof OffscreenCanvas !== 'undefined' && 'createImageBitmap' in window;
+  let inflight = false, dseq = 0;
+  const dwait = new Map();
+  function getWorker() {
+    if (!dwOk) return null;
+    if (!dw) {
+      try {
+        dw = new Worker('detect-worker.js');
+        dw.onmessage = (e) => { const r = dwait.get(e.data.id); dwait.delete(e.data.id); if (r) r(e.data.q); };
+        dw.onerror = () => { dwOk = false; dw = null; dwait.forEach((r) => r(undefined)); dwait.clear(); };
+      } catch (e) { dwOk = false; dw = null; }
+    }
+    return dw;
+  }
+  async function detectFrame(v) {
+    inflight = true;
+    const mode = detectMode(), t0 = performance.now();
+    const allowPaper = !quad && missed > 6;
     let q = null;
-    const t0 = performance.now();
-    // cùng một cách nhận diện với bước cắt sau khi chụp -> khung xanh = vùng cắt thật.
-    // Khi đã có khung theo chữ, KHÔNG nhảy sang cách dò mép giấy chỉ vì 1 khung hình không thấy chữ.
-    const mode = detectMode();
     try {
-      q = mode === 'text' ? Scan.detectContent(v, 480) : Scan.detect(v, 256);
-      if (!q && mode === 'text' && !quad && missed > 6) q = Scan.detect(v, 256);
-    } catch (e) { q = null; }
+      const w = getWorker();
+      if (w) {
+        const k = Math.min(1, 480 / Math.max(v.videoWidth, v.videoHeight));
+        const bmp = await createImageBitmap(v, { resizeWidth: Math.round(v.videoWidth * k), resizeHeight: Math.round(v.videoHeight * k) });
+        q = await new Promise((res) => {
+          const id = ++dseq; dwait.set(id, res);
+          setTimeout(() => { if (dwait.has(id)) { dwait.delete(id); res(null); } }, 4000); // không treo nếu luồng nền chậm
+          w.postMessage({ id, bmp, mode, allowPaper }, [bmp]);
+        });
+        if (q === undefined) q = null; // luồng nền lỗi -> lần sau dò trên trang
+      } else {
+        q = mode === 'text' ? Scan.detectContent(v, 400) : Scan.detect(v, 256);
+        if (!q && mode === 'text' && allowPaper) q = Scan.detect(v, 256);
+      }
+    } catch (e) { q = null; dwOk = false; }
+    inflight = false;
+    if (!opened || paused || busy) return;
     const now = performance.now();
     cost = cost * 0.7 + (now - t0) * 0.3;
+    afterDetect(q, now, v);
+  }
+
+  function afterDetect(q, now, v) {
     trackQuad(q, now);
 
     // mở khoá tự chụp khi: giấy rời khỏi khung một lúc, khung dời chỗ hẳn, hoặc nội dung trang đã đổi
