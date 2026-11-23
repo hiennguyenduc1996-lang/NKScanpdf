@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1D58B4">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="NKScanpdf">
+  <title>NKScanpdf</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-64.png">
+  <link rel="apple-touch-icon" href="icons/apple-180.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Bộ icon nét mảnh (xanh + điểm vàng) theo phong cách NKPdf -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M3.5 8.5a2 2 0 0 1 2-2h2l1.4-2h6.2l1.4 2h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><circle class="acc" cx="12" cy="13" r="3.6"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path class="acc" d="M3 7.5a1.5 1.5 0 0 1 1.5-1.5h4.3l2 2h8.7A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z"/><path d="M3 11h18"/></symbol>
+    <symbol id="i-card" viewBox="0 0 24 24"><rect x="2.5" y="5.5" width="19" height="13" rx="2"/><rect class="acc" x="5" y="8.5" width="5" height="6.5" rx="1"/><path d="M12.5 9.5h6M12.5 12h6M12.5 14.5h4"/></symbol>
+    <symbol id="i-export" viewBox="0 0 24 24"><path d="M13.5 3.5H6.5a1.5 1.5 0 0 0-1.5 1.5v14a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5V9z"/><path d="M13.5 3.5V9H19"/><path class="acc-s" d="M9 15.5l3-3 3 3M12 12.5v5"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 6.5h15M9.5 6.5V4.5h5v2M6.5 6.5l1 13h9l1-13"/><path d="M10 10v6.5M14 10v6.5"/></symbol>
+    <symbol id="i-retake" viewBox="0 0 24 24"><path d="M3.5 8.5a2 2 0 0 1 2-2h2l1.4-2h6.2l1.4 2h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><path class="acc-s" d="M14.8 11.6a3.2 3.2 0 1 0 .2 2.4M15 9.6v2.2h-2.2"/></symbol>
+    <symbol id="i-auto" viewBox="0 0 24 24"><path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><path class="acc" d="M12 7.5l1.2 3.3 3.3 1.2-3.3 1.2L12 16.5l-1.2-3.3L7.5 12l3.3-1.2z"/></symbol>
+    <symbol id="i-full" viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/><rect class="acc" x="8" y="8" width="8" height="8" rx="1"/></symbol>
+    <symbol id="i-rotl" viewBox="0 0 24 24"><path d="M5.5 9.5A7 7 0 1 1 5 14"/><path class="acc-s" d="M5 4.5v5h5"/></symbol>
+    <symbol id="i-rotr" viewBox="0 0 24 24"><path d="M18.5 9.5A7 7 0 1 0 19 14"/><path class="acc-s" d="M19 4.5v5h-5"/></symbol>
+    <symbol id="i-magic" viewBox="0 0 24 24"><path d="M4 20L15 9"/><path d="M13.5 7.5l3 3"/><path class="acc" d="M18 3l.8 2.2L21 6l-2.2.8L18 9l-.8-2.2L15 6l2.2-.8zM8 3.5l.5 1.5 1.5.5-1.5.5L8 7.5 7.5 6 6 5.5 7.5 5z"/></symbol>
+    <symbol id="i-color" viewBox="0 0 24 24"><path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.2 0 1.8-.8 1.8-1.7 0-1.3-1.2-1.6-1.2-2.8 0-1 .8-1.6 1.8-1.6h2.2a3.9 3.9 0 0 0 3.9-3.9C20.5 6.6 16.7 3.5 12 3.5z"/><circle class="acc" cx="8" cy="10" r="1.4"/><circle class="acc" cx="12" cy="7.3" r="1.4"/><circle class="acc" cx="16" cy="9.6" r="1.4"/></symbol>
+    <symbol id="i-gray" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path class="fill-b" d="M12 3.5a8.5 8.5 0 0 1 0 17z"/></symbol>
+    <symbol id="i-bw" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path class="fill-b" d="M4 20L20 4v14a2 2 0 0 1-2 2z"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4.5 19.5l1-4L15.5 5.5l3 3-10 10z"/><path class="acc-s" d="M13.5 7.5l3 3"/></symbol>
+    <symbol id="i-left" viewBox="0 0 24 24"><path d="M14.5 6l-6 6 6 6"/></symbol>
+    <symbol id="i-right" viewBox="0 0 24 24"><path d="M9.5 6l6 6-6 6"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+    <symbol id="i-share" viewBox="0 0 24 24"><circle cx="17.5" cy="5.5" r="2.5"/><circle class="acc" cx="6.5" cy="12" r="2.5"/><circle cx="17.5" cy="18.5" r="2.5"/><path d="M8.7 10.8l6.6-4M8.7 13.2l6.6 4"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5"/><path class="acc-s" d="M5 19.5h14"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path class="acc-s" d="M9.6 9.6a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1 .8-1 1.5v.6"/><circle class="fill-b" cx="12" cy="16.8" r=".9"/></symbol>
+    <symbol id="i-install" viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2"/><path class="acc-s" d="M12 7v7M9.2 11.3L12 14l2.8-2.7"/><path d="M10.5 18.5h3"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5"/><circle class="fill-b" cx="12" cy="8" r="1"/></symbol>
+    <symbol id="i-pdf" viewBox="0 0 24 24"><path d="M14 3.5H6.5A1.5 1.5 0 0 0 5 5v14a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 19 19V8.5z"/><path d="M14 3.5v5h5"/><path class="acc-s" d="M8.5 13.5h7M8.5 16.5h5"/></symbol>
+  </svg>
+
+  <!-- ===== Màn hình chính ===== -->
+  <section id="home" class="view">
+    <header class="appbar">
+      <img class="appbar-logo" src="icons/icon-64.png" alt="">
+      <div class="brand"><span class="b-nk">NK</span><span class="b-rest">Scanpdf</span></div>
+      <span class="ver">v1.0.0</span>
+      <span class="spacer"></span>
+      <button id="btnInstall" class="install hidden">Cài app</button>
+      <button id="btnInfo" class="appbar-btn" aria-label="Hướng dẫn"><svg class="ic light"><use href="#i-info"/></svg></button>
+    </header>
+
+    <nav class="ribbon">
+      <button id="btnCamera" class="rb"><svg class="ic"><use href="#i-camera"/></svg>Chụp</button>
+      <button id="btnGallery" class="rb"><svg class="ic"><use href="#i-folder"/></svg>Chọn ảnh</button>
+      <button id="btnCCCD" class="rb"><svg class="ic"><use href="#i-card"/></svg>CCCD</button>
+      <span class="rb-sep"></span>
+      <button id="btnExport" class="rb" disabled><svg class="ic"><use href="#i-export"/></svg>Xuất PDF</button>
+      <button id="btnClear" class="rb" disabled><svg class="ic"><use href="#i-trash"/></svg>Xóa hết</button>
+    </nav>
+
+    <div class="doctabs">
+      <label class="doctab">
+        <svg class="ic sm"><use href="#i-pdf"/></svg>
+        <input id="docName" class="doc-name" aria-label="Tên tài liệu" spellcheck="false">
+        <svg class="ic xs"><use href="#i-edit"/></svg>
+      </label>
+    </div>
+
+    <main class="workspace">
+      <div id="welcome" class="welcome">
+        <img class="w-logo" src="icons/icon-192.png" alt="NKScanpdf">
+        <div class="w-brand"><span class="b-nk">NK</span><span class="b-rest">SCANPDF</span></div>
+        <p class="w-desc">Chụp tài liệu, làm nét và xuất PDF ngay trên điện thoại. Chụp cả CCCD 2 mặt trên 1 trang.</p>
+        <button id="tileCamera" class="btn-main"><svg class="ic light"><use href="#i-camera"/></svg>Chụp tài liệu</button>
+        <div class="tiles">
+          <button id="tileGallery" class="tile"><svg class="ic lg"><use href="#i-folder"/></svg>Chọn ảnh</button>
+          <button id="tileCCCD" class="tile"><svg class="ic lg"><use href="#i-card"/></svg>Chụp CCCD</button>
+          <button id="tileHelp" class="tile"><svg class="ic lg"><use href="#i-help"/></svg>Hướng dẫn</button>
+          <button id="tileInstall" class="tile"><svg class="ic lg"><use href="#i-install"/></svg>Cài app</button>
+        </div>
+        <p class="author">Tác giả: Nguyễn Đức Hiền · THCS &amp; THPT Nguyễn Khuyến · v1.0.0</p>
+      </div>
+
+      <div id="pagesWrap" class="pages-wrap hidden">
+        <div class="side-title">Trang</div>
+        <div id="pages" class="pages"></div>
+      </div>
+    </main>
+
+    <button id="fab" class="fab hidden" aria-label="Chụp thêm"><svg class="ic light"><use href="#i-camera"/></svg></button>
+
+    <footer class="statusbar"><span id="status">Sẵn sàng</span></footer>
+
+    <input id="fileCamera" type="file" accept="image/*" capture="environment" hidden>
+    <input id="fileGallery" type="file" accept="image/*" multiple hidden>
+  </section>
+
+  <!-- ===== Cắt góc ===== -->
+  <section id="crop" class="view editor hidden">
+    <header class="appbar">
+      <button id="cropCancel" class="appbar-text">Hủy</button>
+      <span class="appbar-title">Kéo 4 góc vào mép giấy</span>
+      <button id="cropNext" class="btn-gold">Tiếp</button>
+    </header>
+    <div id="cropStage" class="stage">
+      <canvas id="cropCanvas"></canvas>
+      <canvas id="loupe" class="loupe hidden" width="120" height="120"></canvas>
+    </div>
+    <nav class="ribbon bottom">
+      <button id="cropRetake" class="rb"><svg class="ic"><use href="#i-retake"/></svg>Chụp lại</button>
+      <button id="cropCard" class="rb"><svg class="ic"><use href="#i-card"/></svg>Thẻ/CCCD</button>
+      <button id="cropAuto" class="rb"><svg class="ic"><use href="#i-auto"/></svg>Tự nhận</button>
+      <button id="cropFull" class="rb"><svg class="ic"><use href="#i-full"/></svg>Toàn ảnh</button>
+      <button id="cropRotL" class="rb"><svg class="ic"><use href="#i-rotl"/></svg>Xoay trái</button>
+      <button id="cropRotR" class="rb"><svg class="ic"><use href="#i-rotr"/></svg>Xoay phải</button>
+    </nav>
+  </section>
+
+  <!-- ===== Bộ lọc ===== -->
+  <section id="filter" class="view editor hidden">
+    <header class="appbar">
+      <button id="filterBack" class="appbar-text">‹ Cắt lại</button>
+      <span class="appbar-title">Chọn chế độ ảnh</span>
+      <button id="filterSave" class="btn-gold">Lưu</button>
+    </header>
+    <div class="stage">
+      <canvas id="filterCanvas" class="paper"></canvas>
+      <div id="busy" class="busy hidden"><div class="spinner"></div>Đang xử lý…</div>
+    </div>
+    <nav class="ribbon bottom" id="filterBar">
+      <button class="rb" data-f="magic"><svg class="ic"><use href="#i-magic"/></svg>Làm nét</button>
+      <button class="rb" data-f="original"><svg class="ic"><use href="#i-color"/></svg>Màu gốc</button>
+      <button class="rb" data-f="gray"><svg class="ic"><use href="#i-gray"/></svg>Xám</button>
+      <button class="rb" data-f="bw"><svg class="ic"><use href="#i-bw"/></svg>Đen trắng</button>
+    </nav>
+  </section>
+
+  <!-- ===== Xuất file ===== -->
+  <div id="sheet" class="dlg-backdrop hidden">
+    <div class="dlg">
+      <div class="dlg-head"><svg class="ic light"><use href="#i-export"/></svg>Xuất tài liệu</div>
+      <div class="dlg-body">
+        <fieldset class="group">
+          <legend>Tùy chọn</legend>
+          <label class="row">Khổ giấy
+            <select id="optSize">
+              <option value="a4">A4 (vừa trang)</option>
+              <option value="fit">Theo kích thước ảnh</option>
+            </select>
+          </label>
+          <label class="row">Chất lượng
+            <select id="optQuality">
+              <option value="max" selected>Tốt nhất (in ấn)</option>
+              <option value="0.85">Cao</option>
+              <option value="0.7">Vừa</option>
+              <option value="0.5">Nhẹ (gửi Zalo, email)</option>
+            </select>
+          </label>
+        </fieldset>
+        <p id="sheetInfo" class="info"></p>
+        <button id="doShare" class="btn-main"><svg class="ic light"><use href="#i-share"/></svg>Chia sẻ PDF</button>
+        <button id="doDownload" class="btn-gold wide"><svg class="ic dark"><use href="#i-down"/></svg>Tải PDF về máy</button>
+        <button id="doImages" class="btn-plain"><svg class="ic"><use href="#i-down"/></svg>Tải từng trang (JPG)</button>
+        <button id="sheetClose" class="btn-link">Đóng</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Hướng dẫn ===== -->
+  <div id="help" class="dlg-backdrop hidden">
+    <div class="dlg">
+      <div class="dlg-head"><svg class="ic light"><use href="#i-help"/></svg>Hướng dẫn</div>
+      <div class="dlg-body help">
+        <p><b>1. Chụp</b> – đặt giấy trên nền tối, chụp thẳng, đủ sáng. App tự nhận 4 góc, bạn kéo chỉnh nếu lệch.</p>
+        <p><b>2. Chọn chế độ</b> – <i>Làm nét</i> cho giấy chữ (khử bóng, nền trắng); <i>Màu gốc</i> cho ảnh màu, CCCD.</p>
+        <p><b>3. CCCD</b> – bấm <i>CCCD</i>, chụp mặt trước rồi mặt sau. Khi xuất A4, 2 mặt nằm trên 1 hàng, trái – phải, đúng kích thước thật.</p>
+        <p><b>4. Chụp sai?</b> – bấm <i>Chụp lại</i> ở màn kéo góc, hoặc <i>✕</i> dưới trang để xóa, <i>✎</i> để sửa.</p>
+        <p><b>5. Cài app</b> – Android (Chrome): bấm <i>Cài app</i>. iPhone (Safari): nút Chia sẻ → <i>Thêm vào MH chính</i>.</p>
+        <p class="muted">Ảnh chỉ xử lý và lưu trên máy của bạn, không gửi lên mạng.</p>
+        <button id="helpClose" class="btn-main">Đã hiểu</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="db.js"></script>
+  <script src="scan.js"></script>
+  <script src="pdf.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
