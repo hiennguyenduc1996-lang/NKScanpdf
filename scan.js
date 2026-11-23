@@ -67,19 +67,157 @@ const Scan = (() => {
   const FULL = () => [[0, 0], [1, 0], [1, 1], [0, 1]];
 
   // ---------- Tự nhận mép giấy ----------
-  function detect(canvas) {
-    const S = 320;
-    const k = Math.min(1, S / Math.max(canvas.width, canvas.height));
-    const w = Math.max(8, Math.round(canvas.width * k));
-    const h = Math.max(8, Math.round(canvas.height * k));
-    const c = makeCanvas(w, h);
+  // Cách 1: lấy màu giấy ở giữa ảnh làm mẫu, loang ra vùng cùng màu (loại mặt bàn gỗ, vải màu...).
+  // Cách 2 (dự phòng): vùng sáng lớn nhất theo ngưỡng Otsu.
+  // Sau đó khớp 4 đường thẳng theo mép giấy để lấy góc chính xác.
+  // src: canvas / ImageBitmap / video; S: cạnh dài khi phân tích (nhỏ = nhanh, dùng cho camera trực tiếp)
+  function detect(src, S = 360) {
+    const sw = src.videoWidth || src.width, sh = src.videoHeight || src.height;
+    const k = Math.min(1, S / Math.max(sw, sh));
+    const w = Math.max(8, Math.round(sw * k));
+    const h = Math.max(8, Math.round(sh * k));
+    if (!detect._c || detect._c.width !== w || detect._c.height !== h) detect._c = makeCanvas(w, h);
+    const c = detect._c;
     const ctx = c.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(canvas, 0, 0, w, h);
+    ctx.drawImage(src, 0, 0, w, h);
     const d = ctx.getImageData(0, 0, w, h).data;
     const n = w * h;
-    let g = new Float32Array(n);
-    for (let i = 0; i < n; i++) g[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
-    g = boxBlur(boxBlur(g, w, h, 2), w, h, 2);
+    let R = new Float32Array(n), G = new Float32Array(n), Bc = new Float32Array(n);
+    for (let i = 0; i < n; i++) { R[i] = d[i * 4]; G[i] = d[i * 4 + 1]; Bc[i] = d[i * 4 + 2]; }
+    R = boxBlur(R, w, h, 2); G = boxBlur(G, w, h, 2); Bc = boxBlur(Bc, w, h, 2);
+    const g = new Float32Array(n);
+    for (let i = 0; i < n; i++) g[i] = 0.299 * R[i] + 0.587 * G[i] + 0.114 * Bc[i];
+
+    const tries = [];
+    const m1 = paperMask(R, G, Bc, g, w, h);
+    if (m1) tries.push(m1);
+    const m2 = otsuMask(g, w, h);
+    if (m2) tries.push(m2);
+    for (const mask of tries) {
+      const q = quadFromMask(mask, w, h);
+      if (q) return q.map(([x, y]) => [clamp01(x / w), clamp01(y / h)]);
+    }
+    return null;
+  }
+
+  // Vùng giấy theo màu mẫu ở giữa ảnh, loang từ tâm
+  function paperMask(R, G, B, L, w, h) {
+    const n = w * h;
+    const x0 = Math.round(w * 0.3), x1 = Math.round(w * 0.7), y0 = Math.round(h * 0.3), y1 = Math.round(h * 0.7);
+    const sample = [];
+    for (let y = y0; y < y1; y += 2) for (let x = x0; x < x1; x += 2) sample.push(y * w + x);
+    // bỏ chữ (tối): chỉ lấy 50% điểm sáng nhất
+    sample.sort((a, b) => L[a] - L[b]);
+    const top = sample.slice(Math.floor(sample.length * 0.5));
+    if (!top.length) return null;
+    const med = (arr) => { arr.sort((a, b) => a - b); return arr[arr.length >> 1]; };
+    const refL = med(top.map((i) => L[i]));
+    const refCr = med(top.map((i) => R[i] - G[i]));
+    const refCb = med(top.map((i) => (R[i] + G[i]) / 2 - B[i]));
+    if (refL < 70) return null; // giữa ảnh quá tối -> không phải giấy
+    const ok = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      const dc = Math.abs(R[i] - G[i] - refCr) + Math.abs((R[i] + G[i]) / 2 - B[i] - refCb);
+      ok[i] = L[i] > refL * 0.55 && dc < 26 + refL * 0.06 ? 1 : 0;
+    }
+    // loang từ các điểm giấy ở vùng giữa
+    const mask = new Uint8Array(n), stack = new Int32Array(n);
+    let sp = 0, size = 0;
+    for (const i of top) if (ok[i] && !mask[i]) { mask[i] = 1; stack[sp++] = i; }
+    while (sp) {
+      const p = stack[--sp]; size++;
+      const x = p % w, y = (p / w) | 0;
+      if (x > 0 && ok[p - 1] && !mask[p - 1]) { mask[p - 1] = 1; stack[sp++] = p - 1; }
+      if (x < w - 1 && ok[p + 1] && !mask[p + 1]) { mask[p + 1] = 1; stack[sp++] = p + 1; }
+      if (y > 0 && ok[p - w] && !mask[p - w]) { mask[p - w] = 1; stack[sp++] = p - w; }
+      if (y < h - 1 && ok[p + w] && !mask[p + w]) { mask[p + w] = 1; stack[sp++] = p + w; }
+    }
+    if (size < n * 0.12 || size > n * 0.985) return null;
+    return mask;
+  }
+
+  // Tứ giác từ mặt nạ: 4 góc thô -> khớp đường thẳng từng cạnh -> giao điểm
+  function quadFromMask(mask, w, h) {
+    const n = w * h, pts = [];
+    let cx = 0, cy = 0;
+    for (let p = 0; p < n; p++) if (mask[p]) {
+      const x = p % w, y = (p / w) | 0;
+      if (x === 0 || y === 0 || x === w - 1 || y === h - 1 || !mask[p - 1] || !mask[p + 1] || !mask[p - w] || !mask[p + w]) {
+        pts.push([x + 0.5, y + 0.5]); cx += x; cy += y;
+      }
+    }
+    if (pts.length < 12) return null;
+    cx /= pts.length; cy /= pts.length;
+    const far = (from) => { let b = null, bd = -1; for (const p of pts) { const dd = (p[0] - from[0]) ** 2 + (p[1] - from[1]) ** 2; if (dd > bd) { bd = dd; b = p; } } return b; };
+    const a = far([cx, cy]);
+    const b = far(a);
+    let c1 = null, c2 = null, mx1 = 0, mx2 = 0;
+    for (const p of pts) {
+      const cr = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+      if (cr > mx1) { mx1 = cr; c1 = p; }
+      if (cr < mx2) { mx2 = cr; c2 = p; }
+    }
+    if (!c1 || !c2) return null;
+    let quad = orderQuad([a, c1, b, c2]);
+    if (Math.abs(polyArea(quad)) < n * 0.1) return null;
+
+    // khớp đường thẳng cho từng cạnh bằng các điểm biên nằm gần cạnh đó
+    const tol = Math.max(w, h) * 0.035;
+    const lines = [];
+    for (let e = 0; e < 4; e++) {
+      const P = quad[e], Q = quad[(e + 1) % 4];
+      const dx = Q[0] - P[0], dy = Q[1] - P[1], len = Math.hypot(dx, dy) || 1;
+      const ux = dx / len, uy = dy / len;
+      let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, cnt = 0;
+      for (const p of pts) {
+        const rx = p[0] - P[0], ry = p[1] - P[1];
+        const t = (rx * ux + ry * uy) / len;
+        if (t < 0.12 || t > 0.88) continue; // bỏ vùng gần góc (góc giấy hay quăn)
+        if (Math.abs(rx * uy - ry * ux) > tol) continue;
+        sx += p[0]; sy += p[1]; sxx += p[0] * p[0]; syy += p[1] * p[1]; sxy += p[0] * p[1]; cnt++;
+      }
+      if (cnt < 6) { lines.push(null); continue; }
+      const mxp = sx / cnt, myp = sy / cnt;
+      const cxx = sxx / cnt - mxp * mxp, cyy = syy / cnt - myp * myp, cxy = sxy / cnt - mxp * myp;
+      const ang = 0.5 * Math.atan2(2 * cxy, cxx - cyy); // hướng chính của các điểm
+      lines.push({ px: mxp, py: myp, dx: Math.cos(ang), dy: Math.sin(ang) });
+    }
+    const refined = quad.map((corner, i) => {
+      const L1 = lines[(i + 3) % 4], L2 = lines[i]; // cạnh trước và cạnh sau của góc i
+      if (!L1 || !L2) return corner;
+      const den = L1.dx * L2.dy - L1.dy * L2.dx;
+      if (Math.abs(den) < 0.2) return corner; // gần song song
+      const t = ((L2.px - L1.px) * L2.dy - (L2.py - L1.py) * L2.dx) / den;
+      const X = L1.px + t * L1.dx, Y = L1.py + t * L1.dy;
+      if (Math.hypot(X - corner[0], Y - corner[1]) > Math.max(w, h) * 0.12) return corner;
+      return [Math.max(0, Math.min(w, X)), Math.max(0, Math.min(h, Y))];
+    });
+    const rq = orderQuad(refined);
+    return isConvexQuad(rq) && Math.abs(polyArea(rq)) > n * 0.1 ? rq : quad;
+  }
+
+  function orderQuad(q) {
+    const qx = q.reduce((s, p) => s + p[0], 0) / 4, qy = q.reduce((s, p) => s + p[1], 0) / 4;
+    q = q.slice().sort((p, r) => Math.atan2(p[1] - qy, p[0] - qx) - Math.atan2(r[1] - qy, r[0] - qx));
+    let tl = 0; for (let i = 1; i < 4; i++) if (q[i][0] + q[i][1] < q[tl][0] + q[tl][1]) tl = i;
+    return [0, 1, 2, 3].map((i) => q[(tl + i) % 4]);
+  }
+
+  function isConvexQuad(q) {
+    let sign = 0;
+    for (let i = 0; i < 4; i++) {
+      const a = q[i], b = q[(i + 1) % 4], c = q[(i + 2) % 4];
+      const cr = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+      const s = Math.sign(cr);
+      if (!s || (sign && s !== sign)) return false;
+      sign = s;
+    }
+    return true;
+  }
+
+  // Dự phòng: vùng sáng lớn nhất (Otsu)
+  function otsuMask(g, w, h) {
+    const n = w * h;
 
     // Otsu
     const hist = new Uint32Array(256);
@@ -116,39 +254,9 @@ const Scan = (() => {
       if (size > bestSize) { bestSize = size; bestLab = cur; }
     }
     if (bestSize < n * 0.12 || bestSize > n * 0.97) return null;
-
-    const pts = [];
-    let cx = 0, cy = 0;
-    for (let p = 0; p < n; p++) if (lab[p] === bestLab) {
-      const x = p % w, y = (p / w) | 0;
-      // chỉ lấy điểm biên để nhanh
-      if (x === 0 || y === 0 || x === w - 1 || y === h - 1 ||
-          lab[p - 1] !== bestLab || lab[p + 1] !== bestLab || lab[p - w] !== bestLab || lab[p + w] !== bestLab) {
-        pts.push([x, y]); cx += x; cy += y;
-      }
-    }
-    if (pts.length < 8) return null;
-    cx /= pts.length; cy /= pts.length;
-    const far = (from) => { let b = null, bd = -1; for (const p of pts) { const dd = (p[0] - from[0]) ** 2 + (p[1] - from[1]) ** 2; if (dd > bd) { bd = dd; b = p; } } return b; };
-    const a = far([cx, cy]);
-    const b = far(a);
-    let c1 = null, c2 = null, m1 = 0, m2 = 0;
-    for (const p of pts) {
-      const cr = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
-      if (cr > m1) { m1 = cr; c1 = p; }
-      if (cr < m2) { m2 = cr; c2 = p; }
-    }
-    if (!c1 || !c2) return null;
-    let quad = [a, c1, b, c2];
-    // sắp theo góc quanh tâm (chiều kim đồng hồ trên màn hình) rồi xoay để TL đứng đầu
-    const qx = quad.reduce((s, p) => s + p[0], 0) / 4, qy = quad.reduce((s, p) => s + p[1], 0) / 4;
-    quad.sort((p, q) => Math.atan2(p[1] - qy, p[0] - qx) - Math.atan2(q[1] - qy, q[0] - qx));
-    let tl = 0; for (let i = 1; i < 4; i++) if (quad[i][0] + quad[i][1] < quad[tl][0] + quad[tl][1]) tl = i;
-    quad = [0, 1, 2, 3].map((i) => quad[(tl + i) % 4]);
-    // diện tích tứ giác phải đủ lớn
-    const area = Math.abs(polyArea(quad));
-    if (area < n * 0.1) return null;
-    return quad.map(([x, y]) => [clamp01((x + 0.5) / w), clamp01((y + 0.5) / h)]);
+    const mask = new Uint8Array(n);
+    for (let p = 0; p < n; p++) if (lab[p] === bestLab) mask[p] = 1;
+    return mask;
   }
 
   function polyArea(q) { let s = 0; for (let i = 0; i < q.length; i++) { const p = q[i], r = q[(i + 1) % q.length]; s += p[0] * r[1] - r[0] * p[1]; } return s / 2; }
@@ -279,7 +387,13 @@ const Scan = (() => {
     if (mode === 'gray') {
       for (let i = 0; i < n; i++) { const v = lum[i]; p[i * 4] = p[i * 4 + 1] = p[i * 4 + 2] = v; }
     } else {
-      const bg = background(lum, w, h);
+      // Nền giấy: chế độ Làm nét ước lượng RIÊNG từng kênh R, G, B -> giấy ám vàng/ám đèn vẫn về trắng trung tính
+      let grids;
+      if (mode === 'magic') {
+        const ch = [new Uint8Array(n), new Uint8Array(n), new Uint8Array(n)];
+        for (let i = 0; i < n; i++) { ch[0][i] = p[i * 4]; ch[1][i] = p[i * 4 + 1]; ch[2][i] = p[i * 4 + 2]; }
+        grids = ch.map((c) => background(c, w, h));
+      } else grids = [background(lum, w, h)];
       // bảng tra đường cong tương phản: đẩy chữ đậm hơn, nền trắng tinh
       const curve = new Uint8Array(256);
       for (let i = 0; i < 256; i++) {
@@ -290,33 +404,46 @@ const Scan = (() => {
       const bwLut = new Uint8Array(512);
       for (let v = 0; v < 512; v++) bwLut[v] = v > 205 ? 255 : v < 150 ? 0 : Math.round(((v - 150) / 55) * 255);
       // nội suy nền: tính trước chỉ số cột, mỗi hàng nội suy lưới theo y một lần
-      const { grid, gw, gh, B } = bg;
+      const { gw, gh, B } = grids[0];
       const cI = new Int32Array(w), cF = new Float32Array(w);
       for (let x = 0; x < w; x++) {
         const gx = Math.min(gw - 1.001, Math.max(0, x / B - 0.5));
         cI[x] = gx | 0; cF[x] = gx - (gx | 0);
       }
-      const rowBg = new Float32Array(gw);
+      const rows = grids.map(() => new Float32Array(gw));
       const right = gw > 1 ? 1 : 0;
+      const nG = grids.length;
       let i = 0;
       for (let y = 0; y < h; y++) {
         const gy = Math.min(gh - 1.001, Math.max(0, y / B - 0.5));
         const iy = gy | 0, fy = gy - iy, r0 = iy * gw, r1 = gh > 1 ? r0 + gw : r0;
-        for (let k = 0; k < gw; k++) rowBg[k] = grid[r0 + k] * (1 - fy) + grid[r1 + k] * fy;
+        for (let c = 0; c < nG; c++) {
+          const gr = grids[c].grid, row = rows[c];
+          for (let k = 0; k < gw; k++) row[k] = gr[r0 + k] * (1 - fy) + gr[r1 + k] * fy;
+        }
         for (let x = 0; x < w; x++, i++) {
-          const ix = cI[x], fx = cF[x];
-          let b = rowBg[ix] * (1 - fx) + rowBg[ix + right] * fx;
-          if (b < 40) b = 40;
-          const s = 255 / b;
-          const q = i << 2;
+          const ix = cI[x], fx = cF[x], gx = 1 - fx, q = i << 2;
           if (mode === 'bw') {
-            const v = lum[i] * s;
+            let b = rows[0][ix] * gx + rows[0][ix + right] * fx; if (b < 40) b = 40;
+            const v = lum[i] * 255 / b;
             p[q] = p[q + 1] = p[q + 2] = bwLut[v > 511 ? 511 : v | 0];
           } else { // magic
-            let r = p[q] * s, g2 = p[q + 1] * s, b2 = p[q + 2] * s;
-            p[q] = curve[r > 255 ? 255 : r | 0];
-            p[q + 1] = curve[g2 > 255 ? 255 : g2 | 0];
-            p[q + 2] = curve[b2 > 255 ? 255 : b2 | 0];
+            let bR = rows[0][ix] * gx + rows[0][ix + right] * fx; if (bR < 40) bR = 40;
+            let bG = rows[1][ix] * gx + rows[1][ix + right] * fx; if (bG < 40) bG = 40;
+            let bB = rows[2][ix] * gx + rows[2][ix + right] * fx; if (bB < 40) bB = 40;
+            let r = p[q] * 255 / bR, g2 = p[q + 1] * 255 / bG, b2 = p[q + 2] * 255 / bB;
+            if (r > 255) r = 255; if (g2 > 255) g2 = 255; if (b2 > 255) b2 = 255;
+            // khử ám màu: điểm ít màu (chữ đen ngả nâu, vệt vàng thấm từ mặt sau) -> xám trung tính;
+            // điểm nhiều màu (dấu đỏ, mực xanh, bút dạ) giữ nguyên màu
+            const L = 0.299 * r + 0.587 * g2 + 0.114 * b2;
+            const mx = r > g2 ? (r > b2 ? r : b2) : (g2 > b2 ? g2 : b2);
+            const mn = r < g2 ? (r < b2 ? r : b2) : (g2 < b2 ? g2 : b2);
+            const chroma = mx - mn, lo = L > 200 ? 75 : 38;
+            const keep = chroma <= lo ? 0 : chroma >= lo + 50 ? 1 : (chroma - lo) / 50;
+            r = L + (r - L) * keep; g2 = L + (g2 - L) * keep; b2 = L + (b2 - L) * keep;
+            p[q] = curve[r < 0 ? 0 : r | 0];
+            p[q + 1] = curve[g2 < 0 ? 0 : g2 | 0];
+            p[q + 2] = curve[b2 < 0 ? 0 : b2 | 0];
           }
         }
       }

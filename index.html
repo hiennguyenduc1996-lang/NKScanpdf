@@ -40,6 +40,7 @@
     <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path class="acc-s" d="M9.6 9.6a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1 .8-1 1.5v.6"/><circle class="fill-b" cx="12" cy="16.8" r=".9"/></symbol>
     <symbol id="i-install" viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2"/><path class="acc-s" d="M12 7v7M9.2 11.3L12 14l2.8-2.7"/><path d="M10.5 18.5h3"/></symbol>
     <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5"/><circle class="fill-b" cx="12" cy="8" r="1"/></symbol>
+    <symbol id="i-flash" viewBox="0 0 24 24"><path class="acc" d="M13.5 2.5L5.5 13.5h6l-1 8 8-11h-6z"/></symbol>
     <symbol id="i-pdf" viewBox="0 0 24 24"><path d="M14 3.5H6.5A1.5 1.5 0 0 0 5 5v14a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 19 19V8.5z"/><path d="M14 3.5v5h5"/><path class="acc-s" d="M8.5 13.5h7M8.5 16.5h5"/></symbol>
   </svg>
 
@@ -98,6 +99,33 @@
 
     <input id="fileCamera" type="file" accept="image/*" capture="environment" hidden>
     <input id="fileGallery" type="file" accept="image/*" multiple hidden>
+  </section>
+
+  <!-- ===== Camera trực tiếp (tự dò mép giấy) ===== -->
+  <section id="camera" class="view camera hidden">
+    <video id="camVideo" playsinline muted autoplay></video>
+    <canvas id="camOverlay"></canvas>
+    <div id="camFlash" class="cam-flash"></div>
+    <header class="cam-top">
+      <button id="camClose" class="cam-ic" aria-label="Đóng camera"><svg class="ic light"><use href="#i-x"/></svg></button>
+      <div class="cam-modes">
+        <button id="camModeDoc" class="cam-chip">Tài liệu</button>
+        <button id="camModeCard" class="cam-chip">CCCD</button>
+      </div>
+      <button id="camTorch" class="cam-ic hidden" aria-label="Đèn flash"><svg class="ic light"><use href="#i-flash"/></svg></button>
+    </header>
+    <div id="camHint" class="cam-hint">Đưa tài liệu vào khung hình</div>
+    <footer class="cam-bottom">
+      <button id="camGallery" class="cam-side"><svg class="ic light"><use href="#i-folder"/></svg>Chọn ảnh</button>
+      <button id="camShutter" class="cam-shutter" aria-label="Chụp">
+        <svg viewBox="0 0 80 80"><circle class="trk" cx="40" cy="40" r="36"/><circle id="shutterRing" class="prog" cx="40" cy="40" r="36"/></svg>
+        <span></span>
+      </button>
+      <div class="cam-right">
+        <button id="camAuto" class="cam-auto"><b>Tự chụp: Bật</b></button>
+        <button id="camDone" class="btn-gold">Đóng</button>
+      </div>
+    </footer>
   </section>
 
   <!-- ===== Cắt góc ===== -->
@@ -192,6 +220,7 @@
   <script src="db.js"></script>
   <script src="scan.js"></script>
   <script src="pdf.js"></script>
+  <script src="camera.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

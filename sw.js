@@ -1,6 +1,7 @@
 // Service worker: cache app shell so the app opens and works offline.
-const CACHE = 'nkscanpdf-v6';
+const CACHE = 'nkscanpdf-v7';
 const SHELL = [
+  './camera.js',
   './worker.js',
   './icons/icon-64.png',
   './icons/apple-180.png',
@@ -22,7 +23,9 @@ const SHELL = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE)
+    .then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -38,8 +41,9 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (url.origin !== location.origin) return;
   // Network first (so updates arrive), fall back to cache when offline.
+  // cache: 'no-cache' -> luôn hỏi máy chủ có bản mới chưa (bỏ qua bộ nhớ đệm HTTP của trình duyệt)
   e.respondWith(
-    fetch(e.request)
+    fetch(e.request, { cache: 'no-cache' })
       .then((res) => {
         const copy = res.clone();
         caches.open(CACHE).then((c) => c.put(e.request, copy));

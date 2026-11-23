@@ -89,9 +89,28 @@
 
   // ---------- Nhập ảnh ----------
   const pick = (input, card) => () => { localStorage.setItem('cardMode', card ? '1' : '0'); $(input).click(); };
-  $('btnCamera').onclick = $('tileCamera').onclick = $('fab').onclick = pick('fileCamera', false);
+  // Chụp: mở camera trực tiếp có khung tự dò mép giấy; máy không hỗ trợ thì dùng camera của máy
+  const openCamera = (card) => async () => {
+    localStorage.setItem('cardMode', card ? '1' : '0');
+    if (!Camera.supported) { $('fileCamera').click(); return; }
+    try {
+      await Camera.open({
+        onCapture: (blob, hintQuad) => {
+          queue.unshift({ file: new File([blob], 'camera.jpg', { type: 'image/jpeg' }), hint: hintQuad });
+          if (!session) nextInQueue();
+        },
+        onGallery: () => $('fileGallery').click(),
+        onClose: () => render(),
+      });
+      Camera.setCount(pages.length);
+    } catch (e) {
+      toast('Không mở được camera trực tiếp – chuyển sang camera của máy', 3000);
+      $('fileCamera').click();
+    }
+  };
+  $('btnCamera').onclick = $('tileCamera').onclick = $('fab').onclick = openCamera(false);
   $('btnGallery').onclick = $('tileGallery').onclick = pick('fileGallery', false);
-  $('btnCCCD').onclick = $('tileCCCD').onclick = pick('fileCamera', true);
+  $('btnCCCD').onclick = $('tileCCCD').onclick = openCamera(true);
   const openHelp = () => show($('help'));
   $('btnInfo').onclick = $('tileHelp').onclick = openHelp;
   $('helpClose').onclick = () => show($('help'), false);
@@ -111,14 +130,17 @@
   $('fileGallery').onchange = onFiles;
 
   async function nextInQueue() {
-    const file = queue.shift();
-    if (!file) return;
+    let item = queue.shift();
+    if (!item) return;
+    const file = item.file || item, hint = item.hint || null;
+    if (Camera.isOpen()) Camera.pause();
     try {
       const base = await Scan.loadToCanvas(file);
       const src = await keepSource(file, base);
       session = {
         page: null, src, base, rot: 0, canvas: base,
-        corners: Scan.detect(base) || Scan.FULL(),
+        // dò lại trên ảnh đầy đủ (chính xác hơn); không được thì dùng khung camera vừa thấy
+        corners: Scan.detect(base) || hint || Scan.FULL(),
         card: localStorage.getItem('cardMode') === '1',
       };
       session.filter = defaultFilter(session.card);
@@ -177,6 +199,7 @@
     session = null;
     show($('crop'), false); show($('filter'), false);
     if (queue.length) nextInQueue();
+    else if (Camera.isOpen()) { Camera.setCount(pages.length); Camera.resume(); } // quay lại camera chụp trang tiếp
   }
 
   // ---------- Màn cắt góc ----------
@@ -398,7 +421,7 @@
     if (!more) {
       let run = 0; // số ảnh CCCD liên tiếp ở cuối
       for (let k = pages.length - 1; k >= 0 && pages[k].card; k--) run++;
-      if (wasNewCard && run % 2 === 1) toast('Đã lưu mặt trước – bấm CCCD để chụp tiếp mặt sau', 3500);
+      if (wasNewCard && run % 2 === 1) toast(Camera.isOpen() ? 'Đã lưu mặt trước – giờ chụp mặt sau' : 'Đã lưu mặt trước – bấm CCCD để chụp tiếp mặt sau', 3500);
       else toast(`Đã lưu – tài liệu có ${pages.length} trang`);
     }
   };
@@ -541,7 +564,14 @@
   window.addEventListener('appinstalled', () => { show($('btnInstall'), false); toast('Đã cài app ra màn hình chính'); });
 
   if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+    const hadSW = !!navigator.serviceWorker.controller;
+    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {}));
+    // có bản mới -> tải lại 1 lần để dùng ngay (chỉ khi đang không chụp/chỉnh ảnh)
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadSW || reloaded || session || Camera.isOpen()) return;
+      reloaded = true; location.reload();
+    });
   }
 
   // ---------- Khởi động ----------
