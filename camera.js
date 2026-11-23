@@ -60,6 +60,7 @@ const Camera = (() => {
     v.srcObject = stream;
     await v.play().catch(() => {});
     opened = true; paused = false; quad = null; stableSince = 0; armed = true; shotSig = null; shotQuad = null;
+    locked = false; hist = []; pend = []; anchor = null; lastQuad = null; missed = 0;
     updateAutoBtn(); updateMode();
     requestAnimationFrame(loop);
   }
@@ -88,17 +89,16 @@ const Camera = (() => {
     if (!v.videoWidth) return;
     let q = null;
     const t0 = performance.now();
-    // cùng một cách nhận diện với bước cắt sau khi chụp -> khung xanh = vùng cắt thật
-    try { q = Scan.detectAuto(v, detectMode(), true); } catch (e) { q = null; }
+    // cùng một cách nhận diện với bước cắt sau khi chụp -> khung xanh = vùng cắt thật.
+    // Khi đã có khung theo chữ, KHÔNG nhảy sang cách dò mép giấy chỉ vì 1 khung hình không thấy chữ.
+    const mode = detectMode();
+    try {
+      q = mode === 'text' ? Scan.detectContent(v, 480) : Scan.detect(v, 256);
+      if (!q && mode === 'text' && !quad && missed > 6) q = Scan.detect(v, 256);
+    } catch (e) { q = null; }
     const now = performance.now();
     cost = cost * 0.7 + (now - t0) * 0.3;
-    if (q) {
-      missed = 0;
-      if (quad) q = q.map((p, i) => [quad[i][0] * 0.55 + p[0] * 0.45, quad[i][1] * 0.55 + p[1] * 0.45]); // làm mượt
-      const moved = lastQuad ? Math.max(...q.map((p, i) => Math.hypot(p[0] - lastQuad[i][0], p[1] - lastQuad[i][1]))) : 1;
-      if (moved < 0.012) { if (!stableSince) stableSince = now; } else stableSince = 0;
-      lastQuad = q; quad = q;
-    } else if (++missed > 4) { quad = null; lastQuad = null; stableSince = 0; }
+    trackQuad(q, now);
 
     // mở khoá tự chụp khi: giấy rời khỏi khung một lúc, khung dời chỗ hẳn, hoặc nội dung trang đã đổi
     if (!armed) {
@@ -117,12 +117,53 @@ const Camera = (() => {
     const prog = armed && quad && stableSince ? Math.min(1, (now - stableSince) / STABLE_MS) : 0;
     setProgress(auto() ? prog : 0);
     if (!quad) hint('Đưa tài liệu vào khung hình');
-    else if (!auto()) hint('Đã thấy giấy – bấm nút chụp');
+    else if (!auto()) hint(locked ? 'Đã khoá khung – bấm nút chụp' : 'Giữ yên máy để khoá khung');
     else if (!armed) hint('Đã chụp trang này – lật sang trang mới');
-    else hint(prog > 0 ? 'Giữ yên máy…' : 'Đã thấy giấy – giữ yên để tự chụp');
+    else hint(locked ? 'Đã khoá khung – giữ yên…' : prog > 0 ? 'Giữ yên máy…' : 'Đã thấy giấy – giữ yên để tự chụp');
     draw();
     if (auto() && armed && prog >= 1) shoot();
   }
+
+  // ---- Lọc rung + khoá khung ----
+  // hist: các lần dò gần nhất; khung hiển thị = trung vị từng góc (bỏ lần dò lệch).
+  // Khung chỉ "nhảy" sang chỗ mới khi ≥ 3 lần dò liên tiếp cùng chỉ về chỗ mới (người dùng dời máy thật).
+  // Đứng yên LOCK_MS -> khoá: khung đứng im hẳn, không rung theo nhiễu nữa.
+  const HIST = 5, JUMP = 0.05, LOCK_MS = 600;
+  let hist = [], pend = [], locked = false;
+  const dist = (a, b) => Math.max(...a.map((p, i) => Math.hypot(p[0] - b[i][0], p[1] - b[i][1])));
+  const median = (qs) => [0, 1, 2, 3].map((i) => [0, 1].map((k) => {
+    const v = qs.map((q) => q[i][k]).sort((x, y) => x - y); return v[v.length >> 1];
+  }));
+  function trackQuad(q, now) {
+    if (!q) {
+      if (++missed > 6) { quad = null; hist = []; pend = []; locked = false; stableSince = 0; lastQuad = null; anchor = null; }
+      return;
+    }
+    missed = 0;
+    if (!quad) { // lần đầu thấy giấy
+      hist = [q]; pend = []; quad = q; lastQuad = q; stableSince = now; locked = false; anchor = q.map((p) => p.slice());
+      return;
+    }
+    if (dist(q, quad) > JUMP) {
+      // lệch nhiều: có thể là nhiễu, có thể là người dùng dời máy -> chờ xác nhận
+      if (pend.length && dist(q, pend[pend.length - 1]) > JUMP) pend = [];
+      pend.push(q);
+      if (pend.length >= 3) { quad = median(pend); hist = pend.slice(); pend = []; locked = false; stableSince = now; lastQuad = quad; anchor = quad.map((p) => p.slice()); }
+      return;
+    }
+    pend = [];
+    hist.push(q); if (hist.length > HIST) hist.shift();
+    const m = median(hist);
+    if (!locked) quad = quad.map((p, i) => [p[0] * 0.6 + m[i][0] * 0.4, p[1] * 0.6 + m[i][1] * 0.4]);
+    // Chịu rung tay: coi là "đứng yên" nếu khung còn nằm trong bán kính TREMOR quanh điểm neo
+    // (không đòi từng lần dò phải trùng khít). Đứng yên đủ LOCK_MS -> khoá.
+    lastQuad = quad;
+    if (locked) return;
+    if (!anchor || dist(quad, anchor) > TREMOR) { anchor = quad.map((p) => p.slice()); stableSince = now; }
+    if (now - stableSince > LOCK_MS) { locked = true; quad = median(hist); }
+  }
+  const TREMOR = 0.025;
+  let anchor = null;
 
   // vẽ khung lên lớp phủ (video hiển thị trọn khung hình: object-fit: contain)
   function draw() {
@@ -136,7 +177,7 @@ const Camera = (() => {
     const s = Math.min(W / v.videoWidth, H / v.videoHeight);
     const ox = (W - v.videoWidth * s) / 2, oy = (H - v.videoHeight * s) / 2;
     const pts = quad.map(([u, t]) => [ox + u * v.videoWidth * s, oy + t * v.videoHeight * s]);
-    const stable = !!stableSince;
+    const stable = locked;
     ctx.beginPath(); pts.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p))); ctx.closePath();
     ctx.fillStyle = stable ? 'rgba(242,196,109,.28)' : 'rgba(47,116,214,.25)'; ctx.fill();
     ctx.lineWidth = 3 * dpr; ctx.strokeStyle = stable ? '#F2C46D' : '#4C90F0'; ctx.stroke();
@@ -211,5 +252,6 @@ const Camera = (() => {
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind); else bind();
 
-  return { supported, open, close, pause, resume, setCount, isOpen: () => opened, updateMode, detectMode };
+  return { supported, open, close, pause, resume, setCount, isOpen: () => opened, updateMode, detectMode,
+    state: () => ({ quad, locked }) };
 })();

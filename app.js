@@ -44,7 +44,7 @@
         <button data-a="share" class="share" aria-label="Chia sẻ trang này">${ic('share')}</button>
         <button data-a="del" class="del" aria-label="Xóa">${ic('x')}</button></div>`;
       el.querySelector('img').src = thumbUrl(p);
-      el.querySelector('img').onclick = () => editPage(p);
+      el.querySelector('img').onclick = () => openViewer(i); // xem bản ĐÃ scan (không mở ảnh gốc)
       el.querySelector('[data-a=left]').disabled = i === 0;
       el.querySelector('[data-a=right]').disabled = i === pages.length - 1;
       el.querySelector('.acts').onclick = (e) => {
@@ -603,6 +603,53 @@
     const b = built; if (!b) return;
     shareOrDownload([new File([b.blob], fileBase() + '.pdf', { type: 'application/pdf' })], fileBase());
   };
+
+  // ---------- Xem trang đã scan ----------
+  let vwIndex = -1, vwUrl = null;
+  async function openViewer(i) {
+    if (i < 0 || i >= pages.length) return;
+    vwIndex = i;
+    const p = pages[i];
+    show($('viewer'));
+    $('vwTitle').textContent = `Trang ${i + 1}/${pages.length}`;
+    $('vwPrev').disabled = i === 0; $('vwNext').disabled = i === pages.length - 1;
+    $('vwImg').classList.remove('zoom');
+    // đang làm nét nền -> hiện ảnh thu nhỏ đã cắt trước, xong thì thay bản nét
+    $('vwImg').src = thumbUrl(p);
+    show($('vwBusy'), !p.out);
+    if (!p.out && jobs.has(p.id)) await jobs.get(p.id);
+    if (vwIndex !== i || !p.out) { show($('vwBusy'), false); return; }
+    if (vwUrl) URL.revokeObjectURL(vwUrl);
+    vwUrl = URL.createObjectURL(p.out);
+    $('vwImg').src = vwUrl;
+    show($('vwBusy'), false);
+  }
+  function closeViewer() {
+    show($('viewer'), false); vwIndex = -1;
+    if (vwUrl) { URL.revokeObjectURL(vwUrl); vwUrl = null; }
+  }
+  $('vwBack').onclick = closeViewer;
+  $('vwPrev').onclick = () => openViewer(vwIndex - 1);
+  $('vwNext').onclick = () => openViewer(vwIndex + 1);
+  $('vwImg').onclick = () => $('vwImg').classList.toggle('zoom'); // chạm để phóng to / thu nhỏ
+  $('vwEdit').onclick = () => { const p = pages[vwIndex]; closeViewer(); editPage(p); };
+  $('vwFilter').onclick = async () => { // vào thẳng bước chọn chế độ ảnh, giữ khung cắt cũ
+    const p = pages[vwIndex]; closeViewer(); await editPage(p); $('cropNext').click();
+  };
+  $('vwShare').onclick = $('vwShare2').onclick = () => openPageShare(pages[vwIndex], vwIndex);
+  $('vwDel').onclick = async () => {
+    const p = pages[vwIndex]; const i = vwIndex;
+    await removePage(p);
+    if (!pages.includes(p)) { if (pages.length) openViewer(Math.min(i, pages.length - 1)); else closeViewer(); }
+  };
+  // vuốt trái / phải để chuyển trang
+  let swX = null;
+  $('vwStage').addEventListener('touchstart', (e) => { swX = e.touches.length === 1 ? e.touches[0].clientX : null; }, { passive: true });
+  $('vwStage').addEventListener('touchend', (e) => {
+    if (swX === null || $('vwImg').classList.contains('zoom')) return;
+    const dx = e.changedTouches[0].clientX - swX; swX = null;
+    if (Math.abs(dx) > 60) openViewer(vwIndex + (dx < 0 ? 1 : -1));
+  });
 
   // ---------- Chia sẻ riêng 1 trang ----------
   let pageFiles = null;

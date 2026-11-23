@@ -129,6 +129,27 @@
     </footer>
   </section>
 
+  <!-- ===== Xem trang đã scan ===== -->
+  <section id="viewer" class="view editor hidden">
+    <header class="appbar">
+      <button id="vwBack" class="appbar-text">‹ Trang</button>
+      <span id="vwTitle" class="appbar-title">Trang 1/1</span>
+      <button id="vwShare" class="appbar-btn" aria-label="Chia sẻ trang này"><svg class="ic light"><use href="#i-share"/></svg></button>
+    </header>
+    <div id="vwStage" class="stage vw-stage">
+      <img id="vwImg" class="paper" alt="Trang đã scan">
+      <div id="vwBusy" class="busy hidden"><div class="spinner"></div>Đang làm nét…</div>
+      <button id="vwPrev" class="vw-nav left" aria-label="Trang trước"><svg class="ic"><use href="#i-left"/></svg></button>
+      <button id="vwNext" class="vw-nav right" aria-label="Trang sau"><svg class="ic"><use href="#i-right"/></svg></button>
+    </div>
+    <nav class="ribbon bottom">
+      <button id="vwEdit" class="rb"><svg class="ic"><use href="#i-full"/></svg>Cắt lại</button>
+      <button id="vwFilter" class="rb"><svg class="ic"><use href="#i-magic"/></svg>Chế độ ảnh</button>
+      <button id="vwShare2" class="rb"><svg class="ic"><use href="#i-share"/></svg>Chia sẻ</button>
+      <button id="vwDel" class="rb"><svg class="ic"><use href="#i-trash"/></svg>Xóa</button>
+    </nav>
+  </section>
+
   <!-- ===== Cắt góc ===== -->
   <section id="crop" class="view editor hidden">
     <header class="appbar">

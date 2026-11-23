@@ -335,12 +335,14 @@ const Scan = (() => {
     const mask = new Uint8Array(n);
     for (let p = 0; p < n; p++) if (sel.has(lab[p])) mask[p] = 1;
     trimAtGutter(mask, ink, w, h);
-    const q = quadFromMask(mask, w, h, 0.03);
+    // khung ổn định theo dòng chữ (không phụ thuộc điểm lẻ) -> camera không bị nhảy
+    const q = textQuad(mask, ink, w, h) || quadFromMask(mask, w, h, 0.03);
     if (!q) return null;
-    // nới lề quanh khối chữ (~2% cạnh dài khối) để không cắt sát chữ
+    // nới lề quanh khối chữ (~5% cạnh dài khối) cho giống lề giấy thật, không cắt sát chữ
+    // (phần nền bàn lọt vào lề sẽ được tô trắng ở bước tẩy nền)
     const cx = q.reduce((s, p) => s + p[0], 0) / 4, cy = q.reduce((s, p) => s + p[1], 0) / 4;
     const size = Math.max(Math.hypot(q[1][0] - q[0][0], q[1][1] - q[0][1]), Math.hypot(q[3][0] - q[0][0], q[3][1] - q[0][1]));
-    const mpx = size * 0.02 * 1.41;
+    const mpx = size * 0.05 * 1.41;
     return q.map(([x, y]) => {
       const dx = x - cx, dy = y - cy, L = Math.hypot(dx, dy) || 1;
       return [clamp01((x + dx / L * mpx) / w), clamp01((y + dy / L * mpx) / h)];
@@ -400,6 +402,86 @@ const Scan = (() => {
     const out = new Uint8Array(n);
     for (let p = 0; p < n; p++) if (ink[p] && lab[p] && !segs[lab[p] - 1].rm) out[p] = 1;
     return out;
+  }
+
+  // Tứ giác ôm khối chữ, tính theo cách THỐNG KÊ nên rất ổn định giữa các khung hình:
+  //  - góc nghiêng = góc làm hình chiếu các dòng chữ "sắc" nhất
+  //  - mép trên/dưới = phân vị 0,3% / 99,7% của chữ theo phương vuông góc dòng
+  //  - mép trái/phải = đường thẳng khớp qua điểm đầu/cuối dòng của 8 nhóm dòng (bắt được độ chụm khi chụp xiên)
+  function textQuad(mask, ink, w, h) {
+    const xs = [], ys = [];
+    for (let p = 0; p < w * h; p++) if (mask[p] && ink[p]) { xs.push(p % w); ys.push((p / w) | 0); }
+    const N = xs.length;
+    if (N < 200) return null;
+    const step = Math.max(1, Math.floor(N / 15000)); // lấy mẫu cho nhanh
+    // 1) góc nghiêng của dòng chữ
+    const H = Math.ceil(Math.hypot(w, h)) + 2;
+    const hist = new Float32Array(H);
+    let bestA = 0, bestS = -1;
+    for (let deg = -12; deg <= 12; deg += 0.5) {
+      const a = deg * Math.PI / 180, s = Math.sin(a), c = Math.cos(a);
+      hist.fill(0);
+      for (let i = 0; i < N; i += step) { const v = (-xs[i] * s + ys[i] * c + w) | 0; if (v >= 0 && v < H) hist[v]++; }
+      let sc = 0; for (let k = 0; k < H; k++) sc += hist[k] * hist[k];
+      if (sc > bestS) { bestS = sc; bestA = a; }
+    }
+    // tinh chỉnh ±0,5° với bước 0,1°
+    for (let deg = bestA * 180 / Math.PI - 0.4; deg <= bestA * 180 / Math.PI + 0.41; deg += 0.1) {
+      const a = deg * Math.PI / 180, s = Math.sin(a), c = Math.cos(a);
+      hist.fill(0);
+      for (let i = 0; i < N; i += step) { const v = (-xs[i] * s + ys[i] * c + w) | 0; if (v >= 0 && v < H) hist[v]++; }
+      let sc = 0; for (let k = 0; k < H; k++) sc += hist[k] * hist[k];
+      if (sc > bestS) { bestS = sc; bestA = a; }
+    }
+    const s = Math.sin(bestA), c = Math.cos(bestA);
+    // 2) toạ độ theo dòng: u dọc dòng, v vuông góc
+    const U = new Float32Array(N), V = new Float32Array(N);
+    for (let i = 0; i < N; i++) { U[i] = xs[i] * c + ys[i] * s; V[i] = -xs[i] * s + ys[i] * c; }
+    const q = (arr, f) => { const a = Float32Array.from(arr).sort(); return a[Math.min(a.length - 1, Math.max(0, Math.floor(f * (a.length - 1))))]; };
+    const v0 = q(V, 0.003), v1 = q(V, 0.997);
+    if (v1 - v0 < h * 0.08) return null;
+    // 3) mép trái/phải theo 8 nhóm dòng
+    const NB = 8, bl = [], br = [];
+    for (let b = 0; b < NB; b++) {
+      const lo = v0 + (v1 - v0) * b / NB, hi = v0 + (v1 - v0) * (b + 1) / NB, us = [];
+      for (let i = 0; i < N; i++) if (V[i] >= lo && V[i] < hi) us.push(U[i]);
+      if (us.length < 30) continue;
+      us.sort((a, b2) => a - b2);
+      bl.push([(lo + hi) / 2, us[Math.floor(us.length * 0.01)]]);
+      br.push([(lo + hi) / 2, us[Math.floor(us.length * 0.99)]]);
+    }
+    if (bl.length < 3) return null;
+    // đường thẳng u = a + b·v, khớp bền: bỏ nhóm lệch xa nhất rồi khớp lại (dòng ngắn/thụt đầu dòng)
+    const fit = (pts, side) => {
+      const ls = (P) => { const n = P.length; let sv = 0, su = 0, svv = 0, svu = 0; for (const [v, u] of P) { sv += v; su += u; svv += v * v; svu += v * u; } const d = n * svv - sv * sv; const b = d ? (n * svu - sv * su) / d : 0; return [(su - b * sv) / n, b]; };
+      let P = pts.slice(), [a, b] = ls(P);
+      for (let it = 0; it < 2 && P.length > 3; it++) {
+        // phía trái: điểm lệch vào trong (u lớn hơn đường) là dòng thụt -> bỏ; phía phải ngược lại
+        let worst = -1, wd = 0;
+        P.forEach(([v, u], k) => { const d = side * (u - (a + b * v)); if (d > wd) { wd = d; worst = k; } });
+        if (worst < 0 || wd < w * 0.01) break;
+        P.splice(worst, 1); [a, b] = ls(P);
+      }
+      return [a, b];
+    };
+    let [aL, sL] = fit(bl, 1), [aR, sR] = fit(br, -1);
+    // Độ chụm thật khi chụp xiên: 2 mép chụm vào nhau đối xứng và nhỏ.
+    // Mép lệch hẳn 1 bên là do dòng dài/ngắn không đều -> dùng độ xiên chung (trung bình), giới hạn ±6%.
+    // Tính LIÊN TỤC (không rẽ nhánh) để rung tay nhỏ chỉ gây xê dịch nhỏ:
+    //   m = độ xiên chung của 2 mép, k = nửa độ chụm, bỏ phần nhỏ hơn 1% (coi như nhiễu) và giới hạn.
+    const cl = (v, a) => Math.max(-a, Math.min(a, v));
+    const m = cl((sL + sR) / 2, 0.06);
+    let k = (sL - sR) / 2;
+    k = cl(Math.sign(k) * Math.max(0, Math.abs(k) - 0.01), 0.04);
+    sL = m + k; sR = m - k;
+    // khớp lại hệ số chặn với độ xiên đã giới hạn (giữ mép ngoài cùng của chữ)
+    const refit = (pts, sl, side) => { let best = side > 0 ? Infinity : -Infinity; for (const [v, u] of pts) { const a0 = u - sl * v; best = side > 0 ? Math.min(best, a0) : Math.max(best, a0); } return best; };
+    aL = refit(bl, sL, 1); aR = refit(br, sR, -1);
+    const L = (v) => aL + sL * v, R = (v) => aR + sR * v;
+    const toXY = (u, v) => [u * c - v * s, u * s + v * c];
+    const quad = [toXY(L(v0), v0), toXY(R(v0), v0), toXY(R(v1), v1), toXY(L(v1), v1)];
+    if (!isConvexQuad(quad) || Math.abs(polyArea(quad)) < w * h * 0.03) return null;
+    return quad;
   }
 
   // Giữ cột chữ chính của trang:
@@ -655,7 +737,7 @@ const Scan = (() => {
     };
     const [x0, x1] = range(cols), [y0, y1] = range(rows);
     if ((x1 - x0) * (y1 - y0) < w * h * 0.2) return canvas;
-    const pad = Math.max(w, h) * 0.02, f = canvas.width / w;
+    const pad = Math.max(w, h) * 0.045, f = canvas.width / w;
     const X0 = Math.max(0, (x0 - pad) * f), X1 = Math.min(canvas.width, (x1 + 1 + pad) * f);
     const Y0 = Math.max(0, (y0 - pad) * f), Y1 = Math.min(canvas.height, (y1 + 1 + pad) * f);
     const ctx = canvas.getContext('2d');
