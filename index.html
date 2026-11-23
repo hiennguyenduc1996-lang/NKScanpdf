@@ -40,6 +40,7 @@
     <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path class="acc-s" d="M9.6 9.6a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1 .8-1 1.5v.6"/><circle class="fill-b" cx="12" cy="16.8" r=".9"/></symbol>
     <symbol id="i-install" viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2"/><path class="acc-s" d="M12 7v7M9.2 11.3L12 14l2.8-2.7"/><path d="M10.5 18.5h3"/></symbol>
     <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5"/><circle class="fill-b" cx="12" cy="8" r="1"/></symbol>
+    <symbol id="i-flat" viewBox="0 0 24 24"><path d="M3.5 7.5c3-2.5 6-2.5 8.5 0s5.5 2.5 8.5 0"/><path class="acc-s" d="M3.5 16.5h17"/><path d="M12 10.5v3.5M10.3 12.4L12 14l1.7-1.6"/></symbol>
     <symbol id="i-flash" viewBox="0 0 24 24"><path class="acc" d="M13.5 2.5L5.5 13.5h6l-1 8 8-11h-6z"/></symbol>
     <symbol id="i-pdf" viewBox="0 0 24 24"><path d="M14 3.5H6.5A1.5 1.5 0 0 0 5 5v14a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 19 19V8.5z"/><path d="M14 3.5v5h5"/><path class="acc-s" d="M8.5 13.5h7M8.5 16.5h5"/></symbol>
   </svg>
@@ -132,7 +133,7 @@
   <section id="crop" class="view editor hidden">
     <header class="appbar">
       <button id="cropCancel" class="appbar-text">Hủy</button>
-      <span class="appbar-title">Kéo 4 góc vào mép giấy</span>
+      <span class="appbar-title">Chỉnh khung vùng cắt</span>
       <button id="cropNext" class="btn-gold">Tiếp</button>
     </header>
     <div id="cropStage" class="stage">
@@ -142,7 +143,7 @@
     <nav class="ribbon bottom">
       <button id="cropRetake" class="rb"><svg class="ic"><use href="#i-retake"/></svg>Chụp lại</button>
       <button id="cropCard" class="rb"><svg class="ic"><use href="#i-card"/></svg>Thẻ/CCCD</button>
-      <button id="cropAuto" class="rb"><svg class="ic"><use href="#i-auto"/></svg>Tự nhận</button>
+      <button id="cropAuto" class="rb"><svg class="ic"><use href="#i-auto"/></svg><b>Theo chữ</b></button>
       <button id="cropFull" class="rb"><svg class="ic"><use href="#i-full"/></svg>Toàn ảnh</button>
       <button id="cropRotL" class="rb"><svg class="ic"><use href="#i-rotl"/></svg>Xoay trái</button>
       <button id="cropRotR" class="rb"><svg class="ic"><use href="#i-rotr"/></svg>Xoay phải</button>
@@ -165,6 +166,8 @@
       <button class="rb" data-f="original"><svg class="ic"><use href="#i-color"/></svg>Màu gốc</button>
       <button class="rb" data-f="gray"><svg class="ic"><use href="#i-gray"/></svg>Xám</button>
       <button class="rb" data-f="bw"><svg class="ic"><use href="#i-bw"/></svg>Đen trắng</button>
+      <span class="rb-sep"></span>
+      <button class="rb" id="filterFlat"><svg class="ic"><use href="#i-flat"/></svg>Làm phẳng</button>
     </nav>
   </section>
 
@@ -175,6 +178,9 @@
       <div class="dlg-body">
         <fieldset class="group">
           <legend>Tùy chọn</legend>
+          <label class="row name-row">Tên file
+            <span class="name-field"><input id="optName" spellcheck="false" autocomplete="off"><em>.pdf</em></span>
+          </label>
           <label class="row">Khổ giấy
             <select id="optSize">
               <option value="a4">A4 (vừa trang)</option>
@@ -199,12 +205,34 @@
     </div>
   </div>
 
+  <!-- ===== Chia sẻ 1 trang ===== -->
+  <div id="pageShare" class="dlg-backdrop hidden">
+    <div class="dlg">
+      <div class="dlg-head"><svg class="ic light"><use href="#i-share"/></svg><span id="psTitle">Chia sẻ trang</span></div>
+      <div class="dlg-body">
+        <div class="ps-top">
+          <img id="psImg" alt="">
+          <div class="ps-side">
+            <label class="ps-label">Tên file</label>
+            <input id="psName" class="ps-name" spellcheck="false" autocomplete="off">
+            <p id="psInfo" class="info"></p>
+          </div>
+        </div>
+        <button id="psJpg" class="btn-main"><svg class="ic light"><use href="#i-share"/></svg>Chia sẻ ảnh (JPG)</button>
+        <button id="psPdf" class="btn-gold wide"><svg class="ic dark"><use href="#i-pdf"/></svg>Chia sẻ PDF trang này</button>
+        <button id="psSave" class="btn-plain"><svg class="ic"><use href="#i-down"/></svg>Tải PDF trang này về máy</button>
+        <button id="psClose" class="btn-link">Đóng</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ===== Hướng dẫn ===== -->
   <div id="help" class="dlg-backdrop hidden">
     <div class="dlg">
       <div class="dlg-head"><svg class="ic light"><use href="#i-help"/></svg>Hướng dẫn</div>
       <div class="dlg-body help">
-        <p><b>1. Chụp</b> – đặt giấy trên nền tối, chụp thẳng, đủ sáng. App tự nhận 4 góc, bạn kéo chỉnh nếu lệch.</p>
+        <p><b>1. Chụp</b> – khung xanh trên camera chính là vùng sẽ cắt (bám theo vùng chữ, bỏ bàn ghế và trang bên cạnh). Giữ yên máy, khung chuyển vàng là app tự chụp.</p>
+        <p><b>Chỉnh khung</b> – kéo 4 góc, hoặc kéo nút giữa cạnh để dời cả cạnh. Nút <i>Theo chữ / Theo mép</i> đổi cách nhận diện. Nút <i>Làm phẳng</i> kéo thẳng dòng chữ trang sách bị cong.</p>
         <p><b>2. Chọn chế độ</b> – <i>Làm nét</i> cho giấy chữ (khử bóng, nền trắng); <i>Màu gốc</i> cho ảnh màu, CCCD.</p>
         <p><b>3. CCCD</b> – bấm <i>CCCD</i>, chụp mặt trước rồi mặt sau. Khi xuất A4, 2 mặt nằm trên 1 hàng, trái – phải, đúng kích thước thật.</p>
         <p><b>4. Chụp sai?</b> – bấm <i>Chụp lại</i> ở màn kéo góc, hoặc <i>✕</i> dưới trang để xóa, <i>✎</i> để sửa.</p>

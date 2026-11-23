@@ -41,6 +41,7 @@
         <div class="acts"><button data-a="left" aria-label="Lên trước">${ic('left')}</button>
         <button data-a="edit" aria-label="Sửa">${ic('edit')}</button>
         <button data-a="right" aria-label="Ra sau">${ic('right')}</button>
+        <button data-a="share" class="share" aria-label="Chia sẻ trang này">${ic('share')}</button>
         <button data-a="del" class="del" aria-label="Xóa">${ic('x')}</button></div>`;
       el.querySelector('img').src = thumbUrl(p);
       el.querySelector('img').onclick = () => editPage(p);
@@ -50,6 +51,7 @@
         const a = e.target.closest('button')?.dataset.a;
         if (a === 'edit') editPage(p);
         if (a === 'del') removePage(p);
+        if (a === 'share') openPageShare(p, i);
         if (a === 'left') move(i, -1);
         if (a === 'right') move(i, 1);
       };
@@ -95,8 +97,8 @@
     if (!Camera.supported) { $('fileCamera').click(); return; }
     try {
       await Camera.open({
-        onCapture: (blob, hintQuad) => {
-          queue.unshift({ file: new File([blob], 'camera.jpg', { type: 'image/jpeg' }), hint: hintQuad });
+        onCapture: (blob, hintQuad, aspect) => {
+          queue.unshift({ file: new File([blob], 'camera.jpg', { type: 'image/jpeg' }), hint: hintQuad, aspect });
           if (!session) nextInQueue();
         },
         onGallery: () => $('fileGallery').click(),
@@ -137,11 +139,14 @@
     try {
       const base = await Scan.loadToCanvas(file);
       const src = await keepSource(file, base);
+      // Ảnh từ camera trực tiếp: dùng ĐÚNG khung xanh người dùng vừa thấy (nếu ảnh cùng tỉ lệ khung hình video).
+      // Ảnh chọn từ thư viện: tự nhận lại.
+      const sameView = hint && item.aspect && Math.abs((base.width / base.height) / item.aspect - 1) < 0.03;
+      const card = localStorage.getItem('cardMode') === '1';
       session = {
         page: null, src, base, rot: 0, canvas: base,
-        // dò lại trên ảnh đầy đủ (chính xác hơn); không được thì dùng khung camera vừa thấy
-        corners: Scan.detect(base) || hint || Scan.FULL(),
-        card: localStorage.getItem('cardMode') === '1',
+        corners: sameView ? hint.map((p) => p.slice()) : (Scan.detectAuto(base, Camera.detectMode()) || Scan.FULL()),
+        card, flatten: !card && localStorage.getItem('flatten') !== '0',
       };
       session.filter = defaultFilter(session.card);
       openCrop();
@@ -177,7 +182,7 @@
       const base = await Scan.loadToCanvas(file);
       session.src = await keepSource(file, base);
       session.base = base; session.canvas = base; session.rot = 0;
-      session.corners = Scan.detect(base) || Scan.FULL();
+      session.corners = Scan.detectAuto(base, Camera.detectMode()) || Scan.FULL();
       openCrop();
       toast('Đã thay ảnh mới');
     } catch (err) { toast('Không mở được ảnh: ' + err.message); }
@@ -191,6 +196,7 @@
       corners: p.corners.map((c) => c.slice()),
       filter: p.filter,
       card: !!p.card,
+      flatten: !!p.flatten,
     };
     openCrop();
   }
@@ -212,6 +218,7 @@
     show($('filter'), false);
     show($('crop'));
     $('cropCard').classList.toggle('active', session.card);
+    updateDetectBtn();
     requestAnimationFrame(layoutCrop);
   }
 
@@ -247,6 +254,16 @@
     // khung
     ctx.strokeStyle = '#4C90F0'; ctx.lineWidth = 2.5 * view.dpr;
     ctx.beginPath(); pts.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p))); ctx.closePath(); ctx.stroke();
+    // nút giữa cạnh (kéo cả cạnh)
+    midPoints(pts).forEach((m, e) => {
+      const a = pts[e], b = pts[(e + 1) % 4], ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
+      ctx.save(); ctx.translate(m[0], m[1]); ctx.rotate(ang);
+      const L = (drag === 4 + e ? 26 : 20) * view.dpr, T = 7 * view.dpr;
+      ctx.beginPath(); ctx.roundRect(-L / 2, -T / 2, L, T, T / 2);
+      ctx.fillStyle = drag === 4 + e ? '#F2C46D' : '#fff'; ctx.fill();
+      ctx.lineWidth = 2 * view.dpr; ctx.strokeStyle = '#F2C46D'; ctx.stroke();
+      ctx.restore();
+    });
     // nút góc
     pts.forEach((p, i) => {
       ctx.beginPath(); ctx.arc(p[0], p[1], (drag === i ? 16 : 12) * view.dpr, 0, Math.PI * 2);
@@ -254,10 +271,11 @@
       ctx.lineWidth = 3 * view.dpr; ctx.strokeStyle = '#F2C46D'; ctx.stroke();
     });
   }
+  const midPoints = (pts) => pts.map((a, e) => { const b = pts[(e + 1) % 4]; return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]; });
 
   function drawLoupe(i) {
     const img = session.canvas;
-    const [u, v] = session.corners[i];
+    const [u, v] = i < 4 ? session.corners[i] : midPoints(session.corners)[i - 4];
     const lc = loupe.getContext('2d');
     const zoom = 2.5 / view.s / view.dpr; // nguồn px cho mỗi px loupe (≈ phóng 2.5x so với màn)
     const sz = 120 * zoom;
@@ -266,7 +284,7 @@
     lc.strokeStyle = '#F2C46D'; lc.lineWidth = 1.5;
     lc.beginPath(); lc.moveTo(60, 48); lc.lineTo(60, 72); lc.moveTo(48, 60); lc.lineTo(72, 60); lc.stroke();
     // đặt kính lúp ở phía đối diện ngón tay
-    const sx = toScreen(session.corners[i])[0] / view.dpr;
+    const sx = toScreen([u, v])[0] / view.dpr;
     const onLeft = sx < cc.clientWidth / 2;
     loupe.style.left = onLeft ? 'auto' : '12px';
     loupe.style.right = onLeft ? '12px' : 'auto';
@@ -276,19 +294,22 @@
     const r = cc.getBoundingClientRect();
     return [(e.clientX - r.left) * view.dpr, (e.clientY - r.top) * view.dpr];
   }
-  let grabOffset = [0, 0];
+  let grabOffset = [0, 0], dragStart = null;
   cc.addEventListener('pointerdown', (e) => {
     if (!session) return;
     const p = pointerPos(e);
-    let best = -1, bd = 48 * view.dpr;
-    session.corners.forEach((c, i) => {
-      const s = toScreen(c); const d = Math.hypot(s[0] - p[0], s[1] - p[1]);
+    let best = -1, bd = 44 * view.dpr;
+    const scr = session.corners.map(toScreen);
+    // 0..3 = góc, 4..7 = giữa cạnh (góc được ưu tiên khi gần như nhau)
+    [...scr, ...midPoints(scr)].forEach((s, i) => {
+      const d = Math.hypot(s[0] - p[0], s[1] - p[1]) + (i >= 4 ? 6 * view.dpr : 0);
       if (d < bd) { bd = d; best = i; }
     });
     if (best < 0) return;
     drag = best;
-    const s = toScreen(session.corners[best]);
+    const s = best < 4 ? scr[best] : midPoints(scr)[best - 4];
     grabOffset = [s[0] - p[0], s[1] - p[1]];
+    dragStart = { p, corners: session.corners.map((c) => c.slice()) };
     cc.setPointerCapture(e.pointerId);
     show(loupe); drawLoupe(best); drawCrop();
   });
@@ -296,18 +317,38 @@
     if (drag < 0) return;
     const p = pointerPos(e);
     const img = session.canvas;
-    const u = (p[0] + grabOffset[0] - view.x) / (img.width * view.s);
-    const v = (p[1] + grabOffset[1] - view.y) / (img.height * view.s);
-    session.corners[drag] = [Math.max(0, Math.min(1, u)), Math.max(0, Math.min(1, v))];
+    const cl = (v) => Math.max(0, Math.min(1, v));
+    if (drag < 4) {
+      const u = (p[0] + grabOffset[0] - view.x) / (img.width * view.s);
+      const v = (p[1] + grabOffset[1] - view.y) / (img.height * view.s);
+      session.corners[drag] = [cl(u), cl(v)];
+    } else { // dời cả cạnh theo hướng vuông góc với cạnh
+      const e0 = drag - 4, e1 = (e0 + 1) % 4, C = dragStart.corners;
+      const ax = (C[e1][0] - C[e0][0]) * img.width, ay = (C[e1][1] - C[e0][1]) * img.height;
+      const L = Math.hypot(ax, ay) || 1, nx = -ay / L, ny = ax / L;
+      const dx = (p[0] - dragStart.p[0]) / view.s, dy = (p[1] - dragStart.p[1]) / view.s;
+      const t = dx * nx + dy * ny;
+      for (const k of [e0, e1]) session.corners[k] = [cl(C[k][0] + t * nx / img.width), cl(C[k][1] + t * ny / img.height)];
+    }
     drawCrop(); drawLoupe(drag);
   });
   const endDrag = () => { if (drag >= 0) { drag = -1; show(loupe, false); drawCrop(); } };
   cc.addEventListener('pointerup', endDrag);
   cc.addEventListener('pointercancel', endDrag);
 
+  // Nút đổi kiểu nhận diện: Theo chữ <-> Theo mép giấy (nhớ lựa chọn cho cả camera)
+  function updateDetectBtn() {
+    const m = session && session.card ? 'paper' : (localStorage.getItem('detectMode') || 'text');
+    $('cropAuto').querySelector('b').textContent = m === 'text' ? 'Theo chữ' : 'Theo mép';
+  }
   $('cropAuto').onclick = () => {
-    const q = Scan.detect(session.canvas);
-    if (q) { session.corners = q; drawCrop(); } else toast('Không tìm thấy mép giấy – hãy kéo tay');
+    const cur = localStorage.getItem('detectMode') || 'text';
+    const next = session.card ? 'paper' : (cur === 'text' ? 'paper' : 'text');
+    if (!session.card) localStorage.setItem('detectMode', next);
+    const q = Scan.detectAuto(session.canvas, next);
+    updateDetectBtn();
+    if (q) { session.corners = q; drawCrop(); toast(next === 'text' ? 'Cắt theo vùng chữ' : 'Cắt theo mép giấy'); }
+    else toast('Không tự nhận được – hãy kéo 4 góc bằng tay');
   };
   $('cropFull').onclick = () => { session.corners = Scan.FULL(); drawCrop(); };
   const rot = (dir) => {
@@ -368,7 +409,8 @@
       sm._of = img; session.small = sm;
     }
     const k = session.small.width / img.width;
-    session.warped = Scan.warp(session.small, q.map(([x, y]) => [x * k, y * k]), size, PREVIEW_MAX);
+    session.warpedRaw = Scan.warp(session.small, q.map(([x, y]) => [x * k, y * k]), size, PREVIEW_MAX);
+    session.warpedFlat = null;
     await renderFilter();
   };
   const PREVIEW_MAX = 1600;
@@ -376,20 +418,32 @@
   // ---------- Màn bộ lọc ----------
   const fc = $('filterCanvas');
   let working = false; // đang xử lý ảnh -> chặn bấm Lưu
+  // tẩy nền ngoài nội dung: với tài liệu (không phải thẻ) ở các chế độ làm trắng giấy
+  const wantClean = (s) => !s.card && s.filter !== 'original';
   async function renderFilter() {
     working = true;
     show($('busy')); await nextFrame();
-    document.querySelectorAll('#filterBar .rb').forEach((b) => b.classList.toggle('active', b.dataset.f === session.filter));
-    session.result = Scan.applyFilter(session.warped, session.filter);
+    document.querySelectorAll('#filterBar .rb[data-f]').forEach((b) => b.classList.toggle('active', b.dataset.f === session.filter));
+    $('filterFlat').classList.toggle('active', !!session.flatten);
+    $('filterFlat').classList.toggle('hidden', !!session.card);
+    let src = session.warpedRaw;
+    if (session.flatten) src = session.warpedFlat || (session.warpedFlat = Scan.flatten(session.warpedRaw));
+    session.result = Scan.applyFilter(src, session.filter);
+    if (wantClean(session)) Scan.cleanBorder(session.result);
     fc.width = session.result.width; fc.height = session.result.height;
     fc.getContext('2d').drawImage(session.result, 0, 0);
     show($('busy'), false);
     working = false;
   }
   $('filterBar').onclick = (e) => {
-    const b = e.target.closest('.rb'); if (!b || !session) return;
-    session.filter = b.dataset.f;
-    localStorage.setItem(filterKey(session.card), session.filter);
+    const b = e.target.closest('.rb'); if (!b || !session || working) return;
+    if (b.id === 'filterFlat') {
+      session.flatten = !session.flatten;
+      localStorage.setItem('flatten', session.flatten ? '1' : '0');
+    } else {
+      session.filter = b.dataset.f;
+      localStorage.setItem(filterKey(session.card), session.filter);
+    }
     renderFilter();
   };
   $('filterBack').onclick = openCrop;
@@ -401,7 +455,7 @@
     const thumb = await makeThumb(session.result);
     const data = {
       src: session.src, rot: session.rot, corners: session.corners, filter: session.filter, card: session.card,
-      size: session.size || null, thumb, out: null, w: 0, h: 0,
+      size: session.size || null, flatten: !!session.flatten, clean: wantClean(session), thumb, out: null, w: 0, h: 0,
     };
     let page;
     if (session.page) {
@@ -451,7 +505,8 @@
 
   function processPage(p) {
     const ver = (p._ver || 0) + 1; p._ver = ver;
-    const job = { src: p.src, rot: p.rot || 0, corners: p.corners, size: p.size || null, filter: p.filter, quality: BEST_Q };
+    const job = { src: p.src, rot: p.rot || 0, corners: p.corners, size: p.size || null, filter: p.filter,
+      flatten: !!p.flatten, clean: !!p.clean, quality: BEST_Q };
     const prev = jobs.get(p.id) || Promise.resolve();
     const run = prev.catch(() => {}).then(() => runFull(job)).then(async (r) => {
       if (p._ver !== ver || !pages.includes(p)) return; // trang đã bị sửa lại / xóa
@@ -478,7 +533,14 @@
   let built = null; // {key, blob}
   const docName = $('docName');
   docName.value = localStorage.getItem('docName') || defaultName();
-  docName.onchange = () => { localStorage.setItem('docName', docName.value.trim() || defaultName()); built = null; };
+  // Tên file: ô ở tab tài liệu và ô trong hộp Xuất PDF luôn đồng bộ
+  const setDocName = (v) => {
+    docName.value = v; $('optName').value = v;
+    localStorage.setItem('docName', v.trim() || defaultName()); built = null;
+  };
+  docName.onchange = () => setDocName(docName.value);
+  $('optName').oninput = () => { docName.value = $('optName').value; built = null; $('doShare').disabled = $('doDownload').disabled = true; clearTimeout(nameT); nameT = setTimeout(() => { setDocName($('optName').value); buildPdf(); }, 400); };
+  let nameT;
   function defaultName() {
     const d = new Date(), z = (n) => String(n).padStart(2, '0');
     return `Scan ${z(d.getDate())}-${z(d.getMonth() + 1)}-${d.getFullYear()}`;
@@ -516,7 +578,7 @@
     return built;
   }
 
-  $('btnExport').onclick = () => { show($('sheet')); buildPdf(); };
+  $('btnExport').onclick = () => { $('optName').value = docName.value; show($('sheet')); buildPdf(); };
   $('sheetClose').onclick = () => show($('sheet'), false);
   $('sheet').onclick = (e) => { if (e.target === $('sheet')) show($('sheet'), false); };
   $('optSize').onchange = $('optQuality').onchange = () => buildPdf();
@@ -528,17 +590,45 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 4000);
   }
 
-  $('doShare').onclick = async () => {
+  // Chia sẻ (Zalo, Gmail, Drive…); máy không hỗ trợ thì tải về
+  async function shareOrDownload(files, title) {
+    if (navigator.canShare && navigator.canShare({ files })) {
+      try { await navigator.share({ files, title }); return; }
+      catch (e) { if (e.name === 'AbortError') return; toast('Không chia sẻ được – đã tải về máy'); }
+    } else toast('Máy không hỗ trợ chia sẻ – đã tải về máy');
+    for (const f of files) { download(f, f.name); await new Promise((r) => setTimeout(r, 350)); }
+  }
+
+  $('doShare').onclick = () => {
     const b = built; if (!b) return;
-    const file = new File([b.blob], fileBase() + '.pdf', { type: 'application/pdf' });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      try { await navigator.share({ files: [file], title: fileBase() }); }
-      catch (e) { if (e.name !== 'AbortError') toast('Không chia sẻ được, hãy dùng "Tải PDF về máy"'); }
-    } else {
-      download(b.blob, file.name);
-      toast('Máy không hỗ trợ chia sẻ – đã tải PDF về');
-    }
+    shareOrDownload([new File([b.blob], fileBase() + '.pdf', { type: 'application/pdf' })], fileBase());
   };
+
+  // ---------- Chia sẻ riêng 1 trang ----------
+  let pageFiles = null;
+  async function openPageShare(p, i) {
+    pageFiles = null;
+    const name = `${fileBase()}_trang${i + 1}`;
+    $('psTitle').textContent = `Chia sẻ trang ${i + 1}`;
+    $('psName').value = name;
+    $('psImg').src = thumbUrl(p);
+    ['psJpg', 'psPdf', 'psSave'].forEach((id) => ($(id).disabled = true));
+    $('psInfo').textContent = 'Đang chuẩn bị…';
+    show($('pageShare'));
+    if (jobs.has(p.id)) { $('psInfo').textContent = 'Đang làm nét trang này…'; await jobs.get(p.id); }
+    if (!p.out) { $('psInfo').textContent = 'Trang chưa xử lý được – hãy sửa lại trang'; return; }
+    const enc = await encodePage(p, 'max');
+    const { blob } = PDF.build([enc], $('optSize').value || 'a4', name);
+    pageFiles = { jpg: p.out, pdf: blob, page: p };
+    $('psInfo').textContent = `Ảnh ${(p.out.size / 1048576).toFixed(2)} MB · PDF ${(blob.size / 1048576).toFixed(2)} MB`;
+    ['psJpg', 'psPdf', 'psSave'].forEach((id) => ($(id).disabled = false));
+  }
+  const psBase = () => ($('psName').value.trim() || 'Trang').replace(/[\\/:*?"<>|]+/g, '_');
+  $('psJpg').onclick = () => pageFiles && shareOrDownload([new File([pageFiles.jpg], psBase() + '.jpg', { type: 'image/jpeg' })], psBase());
+  $('psPdf').onclick = () => pageFiles && shareOrDownload([new File([pageFiles.pdf], psBase() + '.pdf', { type: 'application/pdf' })], psBase());
+  $('psSave').onclick = () => { if (pageFiles) { download(pageFiles.pdf, psBase() + '.pdf'); toast('Đã tải PDF trang này về máy'); } };
+  $('psClose').onclick = () => show($('pageShare'), false);
+  $('pageShare').onclick = (e) => { if (e.target === $('pageShare')) show($('pageShare'), false); };
   $('doDownload').onclick = () => { if (built) download(built.blob, fileBase() + '.pdf'); };
   $('doImages').onclick = async () => {
     const b = await buildPdf();

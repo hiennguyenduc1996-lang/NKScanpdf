@@ -137,7 +137,7 @@ const Scan = (() => {
   }
 
   // Tứ giác từ mặt nạ: 4 góc thô -> khớp đường thẳng từng cạnh -> giao điểm
-  function quadFromMask(mask, w, h) {
+  function quadFromMask(mask, w, h, minFrac = 0.1) {
     const n = w * h, pts = [];
     let cx = 0, cy = 0;
     for (let p = 0; p < n; p++) if (mask[p]) {
@@ -159,7 +159,7 @@ const Scan = (() => {
     }
     if (!c1 || !c2) return null;
     let quad = orderQuad([a, c1, b, c2]);
-    if (Math.abs(polyArea(quad)) < n * 0.1) return null;
+    if (Math.abs(polyArea(quad)) < n * minFrac) return null;
 
     // khớp đường thẳng cho từng cạnh bằng các điểm biên nằm gần cạnh đó
     const tol = Math.max(w, h) * 0.035;
@@ -193,7 +193,489 @@ const Scan = (() => {
       return [Math.max(0, Math.min(w, X)), Math.max(0, Math.min(h, Y))];
     });
     const rq = orderQuad(refined);
-    return isConvexQuad(rq) && Math.abs(polyArea(rq)) > n * 0.1 ? rq : quad;
+    return isConvexQuad(rq) && Math.abs(polyArea(rq)) > n * minFrac ? rq : quad;
+  }
+
+  // ---------- Nhận diện theo VÙNG CHỮ ----------
+  // Tìm nét chữ (tối hơn nền giấy xung quanh) -> nối chữ thành khối -> chọn khối chữ chính của trang
+  // (bỏ các mẩu chữ của trang bên cạnh chạm mép ảnh) -> tứ giác ôm khối chữ, nới thêm lề.
+  function grayOf(src, S) {
+    const sw = src.videoWidth || src.width, sh = src.videoHeight || src.height;
+    const k = Math.min(1, S / Math.max(sw, sh));
+    const w = Math.max(8, Math.round(sw * k)), h = Math.max(8, Math.round(sh * k));
+    const c = makeCanvas(w, h);
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(src, 0, 0, w, h);
+    const d = ctx.getImageData(0, 0, w, h).data, g = new Float32Array(w * h), ch = new Float32Array(w * h);
+    for (let i = 0; i < g.length; i++) {
+      const r = d[i * 4], gg = d[i * 4 + 1], b = d[i * 4 + 2];
+      g[i] = 0.299 * r + 0.587 * gg + 0.114 * b;
+      ch[i] = Math.max(r, gg, b) - Math.min(r, gg, b); // độ đậm màu
+    }
+    return { g, ch, w, h };
+  }
+
+  // mặt nạ nét chữ: điểm tối rõ rệt so với nền GIẤY quanh nó (nền sáng, ít màu).
+  // Loại vân gỗ, vải hoa, bóng mép sách (nền nhiều màu hoặc tối).
+  // edgeSafe: nền = điểm SÁNG nhất quanh đó (phía giấy) -> chữ sát mép giấy cạnh mặt bàn tối vẫn được nhận.
+  //   Chỉ dùng trên ảnh ĐÃ làm trắng giấy (bước tẩy nền); khi nhận diện ảnh gốc dùng nền trung bình để không nhầm vân gỗ.
+  function inkMask(g, w, h, ch, edgeSafe) {
+    let bg, bgc;
+    if (edgeSafe) {
+      const r = Math.max(3, Math.round(Math.max(w, h) / 90));
+      bg = boxBlur(slide(g, w, h, r, true), w, h, 1);
+      bgc = null;
+    } else {
+      const r = Math.max(4, Math.round(Math.max(w, h) / 40));
+      bg = boxBlur(boxBlur(g, w, h, r), w, h, r);
+      bgc = ch ? boxBlur(boxBlur(ch, w, h, r), w, h, r) : null;
+    }
+    const m = new Uint8Array(w * h);
+    for (let i = 0; i < m.length; i++) {
+      if (!(bg[i] > 110 && g[i] < bg[i] * 0.8 && bg[i] - g[i] > 20)) continue;
+      if (bgc && (bgc[i] > 42 || (ch[i] > 70 && g[i] > 80))) continue;
+      m[i] = 1;
+    }
+    return m;
+  }
+
+  // lọc lớn nhất / nhỏ nhất trong cửa sổ (2r+1)² (tách theo hàng rồi cột)
+  function slide(src, w, h, r, isMax) {
+    const tmp = new Float32Array(src.length), out = new Float32Array(src.length);
+    const pick = isMax ? Math.max : Math.min;
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x++) {
+        let v = src[row + x];
+        const a = Math.max(0, x - r), b = Math.min(w - 1, x + r);
+        for (let k = a; k <= b; k += 2) v = pick(v, src[row + k]);
+        tmp[row + x] = v;
+      }
+    }
+    for (let x = 0; x < w; x++) {
+      for (let y = 0; y < h; y++) {
+        let v = tmp[y * w + x];
+        const a = Math.max(0, y - r), b = Math.min(h - 1, y + r);
+        for (let k = a; k <= b; k += 2) v = pick(v, tmp[k * w + x]);
+        out[y * w + x] = v;
+      }
+    }
+    return out;
+  }
+
+  // giãn mặt nạ theo hộp (2rx+1)×(2ry+1) bằng ảnh tích phân
+  function dilateBox(m, w, h, rx, ry) {
+    const I = new Int32Array((w + 1) * (h + 1));
+    for (let y = 0; y < h; y++) {
+      let row = 0;
+      for (let x = 0; x < w; x++) { row += m[y * w + x]; I[(y + 1) * (w + 1) + x + 1] = I[y * (w + 1) + x + 1] + row; }
+    }
+    const out = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      const y0 = Math.max(0, y - ry), y1 = Math.min(h, y + ry + 1);
+      for (let x = 0; x < w; x++) {
+        const x0 = Math.max(0, x - rx), x1 = Math.min(w, x + rx + 1);
+        out[y * w + x] = I[y1 * (w + 1) + x1] - I[y0 * (w + 1) + x1] - I[y1 * (w + 1) + x0] + I[y0 * (w + 1) + x0] > 0 ? 1 : 0;
+      }
+    }
+    return out;
+  }
+
+  function detectContent(src, S = 480) {
+    const { g, ch, w, h } = grayOf(src, S);
+    const n = w * h;
+    let ink = inkMask(g, w, h, ch);
+    ink = dropCutOffLines(ink, w, h);
+    ink = keepMainColumn(ink, w, h);
+    let inkTotal = 0; for (let i = 0; i < n; i++) inkTotal += ink[i];
+    if (inkTotal < n * 0.004) return null; // gần như không có chữ
+    // nối chữ thành dòng, dòng thành khối
+    const blk = dilateBox(ink, w, h, Math.max(2, Math.round(w * 0.011)), Math.max(2, Math.round(h * 0.012)));
+    // gán nhãn khối
+    const lab = new Int32Array(n), stack = new Int32Array(n), comps = [];
+    for (let s = 0; s < n; s++) {
+      if (!blk[s] || lab[s]) continue;
+      const id = comps.length + 1;
+      let sp = 0, inkc = 0, x0 = w, x1 = 0, y0 = h, y1 = 0, sx = 0, sy = 0, cnt = 0;
+      stack[sp++] = s; lab[s] = id;
+      while (sp) {
+        const p = stack[--sp], x = p % w, y = (p / w) | 0;
+        inkc += ink[p]; cnt++; sx += x; sy += y;
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+        if (x > 0 && blk[p - 1] && !lab[p - 1]) { lab[p - 1] = id; stack[sp++] = p - 1; }
+        if (x < w - 1 && blk[p + 1] && !lab[p + 1]) { lab[p + 1] = id; stack[sp++] = p + 1; }
+        if (y > 0 && blk[p - w] && !lab[p - w]) { lab[p - w] = id; stack[sp++] = p - w; }
+        if (y < h - 1 && blk[p + w] && !lab[p + w]) { lab[p + w] = id; stack[sp++] = p + w; }
+      }
+      const eb = Math.round(Math.min(w, h) * 0.012);
+      comps.push({ id, ink: inkc, x0, x1, y0, y1, cx: sx / cnt, cy: sy / cnt,
+        border: x0 <= eb || x1 >= w - 1 - eb || y0 <= eb || y1 >= h - 1 - eb });
+    }
+    if (!comps.length) return null;
+    // khối chính: nhiều chữ nhất, ưu tiên gần giữa ảnh và không chạm mép ảnh
+    const diag = Math.hypot(w, h) / 2;
+    const score = (c) => c.ink * (1 - 0.6 * Math.hypot(c.cx - w / 2, c.cy - h / 2) / diag) * (c.border ? 0.6 : 1);
+    let main = comps[0]; for (const c of comps) if (score(c) > score(main)) main = c;
+    if (main.ink < inkTotal * 0.25) return null;
+    // gộp các khối lân cận (đề mục, số trang...) nằm sát khối chính, bỏ khối chạm mép ảnh (chữ trang bên cạnh)
+    const sel = new Set([main.id]);
+    let U = { x0: main.x0, x1: main.x1, y0: main.y0, y1: main.y1 };
+    const gap = Math.max(w, h) * 0.045;
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const c of comps) {
+        if (sel.has(c.id) || c.ink < inkTotal * 0.002) continue;
+        if (c.border && !main.border) continue;
+        const near = c.x0 <= U.x1 + gap && c.x1 >= U.x0 - gap && c.y0 <= U.y1 + gap && c.y1 >= U.y0 - gap;
+        if (!near) continue;
+        sel.add(c.id); changed = true;
+        U = { x0: Math.min(U.x0, c.x0), x1: Math.max(U.x1, c.x1), y0: Math.min(U.y0, c.y0), y1: Math.max(U.y1, c.y1) };
+      }
+    }
+    const mask = new Uint8Array(n);
+    for (let p = 0; p < n; p++) if (sel.has(lab[p])) mask[p] = 1;
+    trimAtGutter(mask, ink, w, h);
+    const q = quadFromMask(mask, w, h, 0.03);
+    if (!q) return null;
+    // nới lề quanh khối chữ (~2% cạnh dài khối) để không cắt sát chữ
+    const cx = q.reduce((s, p) => s + p[0], 0) / 4, cy = q.reduce((s, p) => s + p[1], 0) / 4;
+    const size = Math.max(Math.hypot(q[1][0] - q[0][0], q[1][1] - q[0][1]), Math.hypot(q[3][0] - q[0][0], q[3][1] - q[0][1]));
+    const mpx = size * 0.02 * 1.41;
+    return q.map(([x, y]) => {
+      const dx = x - cx, dy = y - cy, L = Math.hypot(dx, dy) || 1;
+      return [clamp01((x + dx / L * mpx) / w), clamp01((y + dy / L * mpx) / h)];
+    });
+  }
+
+  // Bỏ chữ của trang bên cạnh / chữ bị khung ảnh cắt ngang:
+  // tách nét chữ thành từng đoạn dòng; đoạn chạm mép ảnh -> bỏ, kéo theo các đoạn nối tiếp trên cùng dòng.
+  function dropCutOffLines(ink, w, h) {
+    const n = w * h;
+    const seg = dilateBox(ink, w, h, Math.max(2, Math.round(w * 0.006)), 1);
+    const lab = new Int32Array(n), stack = new Int32Array(n), segs = [];
+    for (let s = 0; s < n; s++) {
+      if (!seg[s] || lab[s]) continue;
+      const id = segs.length + 1;
+      let sp = 0, x0 = w, x1 = 0, y0 = h, y1 = 0, inkc = 0;
+      stack[sp++] = s; lab[s] = id;
+      while (sp) {
+        const p = stack[--sp], x = p % w, y = (p / w) | 0;
+        inkc += ink[p];
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+        if (x > 0 && seg[p - 1] && !lab[p - 1]) { lab[p - 1] = id; stack[sp++] = p - 1; }
+        if (x < w - 1 && seg[p + 1] && !lab[p + 1]) { lab[p + 1] = id; stack[sp++] = p + 1; }
+        if (y > 0 && seg[p - w] && !lab[p - w]) { lab[p - w] = id; stack[sp++] = p - w; }
+        if (y < h - 1 && seg[p + w] && !lab[p + w]) { lab[p + w] = id; stack[sp++] = p + w; }
+      }
+      segs.push({ x0, x1, y0, y1, ink: inkc, rm: false });
+    }
+    const ex = Math.round(w * 0.015), ey = Math.round(h * 0.012);
+    let removedInk = 0, totalInk = 0;
+    for (const s of segs) {
+      totalInk += s.ink;
+      if (s.x0 <= ex || s.x1 >= w - 1 - ex || s.y0 <= ey || s.y1 >= h - 1 - ey) s.rm = true;
+    }
+    // lan theo dòng: đoạn nằm cùng hàng và sát đoạn đã bỏ (khoảng cách chữ < 1,3% bề ngang)
+    const gap = w * 0.013;
+    const order = segs.map((s, i) => i).sort((a, b) => segs[a].y0 - segs[b].y0);
+    for (let changed = true, iter = 0; changed && iter < 30; iter++) {
+      changed = false;
+      for (let ii = 0; ii < order.length; ii++) {
+        const r = segs[order[ii]];
+        if (!r.rm) continue;
+        for (let jj = ii - 1; jj >= 0 && segs[order[jj]].y0 > r.y0 - h * 0.05; jj--) changed = spread(r, segs[order[jj]]) || changed;
+        for (let jj = ii + 1; jj < order.length && segs[order[jj]].y0 < r.y1; jj++) changed = spread(r, segs[order[jj]]) || changed;
+      }
+    }
+    function spread(r, c) {
+      if (c.rm) return false;
+      const ov = Math.min(r.y1, c.y1) - Math.max(r.y0, c.y0);
+      if (ov < 0.5 * Math.min(r.y1 - r.y0 + 1, c.y1 - c.y0 + 1)) return false;
+      const gx = c.x0 > r.x1 ? c.x0 - r.x1 : r.x0 > c.x1 ? r.x0 - c.x1 : 0;
+      if (gx > gap) return false;
+      c.rm = true; return true;
+    }
+    for (const s of segs) if (s.rm) removedInk += s.ink;
+    if (removedInk > totalInk * 0.5) return ink; // khung chụp sát quá -> giữ nguyên, không đoán bừa
+    const out = new Uint8Array(n);
+    for (let p = 0; p < n; p++) if (ink[p] && lab[p] && !segs[lab[p] - 1].rm) out[p] = 1;
+    return out;
+  }
+
+  // Giữ cột chữ chính của trang:
+  //  1) nét chữ -> đoạn -> ghép thành DÒNG (các đoạn cùng hàng, cách nhau < khoảng cách giữa các từ)
+  //  2) cột chính = các dòng dài đi qua giữa trang
+  //  3) dòng khác chỉ được giữ nếu nằm trong phạm vi cột chính ở các dòng lân cận (chịu được trang nghiêng)
+  //  -> chữ trang bên cạnh (bên kia rãnh gáy) bị bỏ; đề mục, số trang trong cột vẫn giữ
+  function keepMainColumn(ink, w, h) {
+    const n = w * h;
+    const seg = dilateBox(ink, w, h, Math.max(1, Math.round(w * 0.005)), 1);
+    const lab = new Int32Array(n), stack = new Int32Array(n), segs = [];
+    for (let s = 0; s < n; s++) {
+      if (!seg[s] || lab[s]) continue;
+      const id = segs.length + 1;
+      let sp = 0, x0 = w, x1 = 0, y0 = h, y1 = 0, inkc = 0;
+      stack[sp++] = s; lab[s] = id;
+      while (sp) {
+        const p = stack[--sp], x = p % w, y = (p / w) | 0;
+        inkc += ink[p];
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+        if (x > 0 && seg[p - 1] && !lab[p - 1]) { lab[p - 1] = id; stack[sp++] = p - 1; }
+        if (x < w - 1 && seg[p + 1] && !lab[p + 1]) { lab[p + 1] = id; stack[sp++] = p + 1; }
+        if (y > 0 && seg[p - w] && !lab[p - w]) { lab[p - w] = id; stack[sp++] = p - w; }
+        if (y < h - 1 && seg[p + w] && !lab[p + w]) { lab[p + w] = id; stack[sp++] = p + w; }
+      }
+      segs.push({ x0, x1, y0, y1, ink: inkc });
+    }
+    if (segs.length < 5) return ink;
+    // ghép đoạn thành dòng (union-find)
+    const par = segs.map((_, i) => i);
+    const find = (i) => { while (par[i] !== i) { par[i] = par[par[i]]; i = par[i]; } return i; };
+    const order = segs.map((_, i) => i).sort((a, b) => segs[a].y0 - segs[b].y0);
+    const gap = w * 0.016, hMax = h * 0.06;
+    for (let a = 0; a < order.length; a++) {
+      const A = segs[order[a]];
+      for (let b = a + 1; b < order.length && segs[order[b]].y0 <= A.y1; b++) {
+        const B = segs[order[b]];
+        const ov = Math.min(A.y1, B.y1) - Math.max(A.y0, B.y0);
+        if (ov < 0.5 * Math.min(A.y1 - A.y0 + 1, B.y1 - B.y0 + 1)) continue;
+        const gx = B.x0 > A.x1 ? B.x0 - A.x1 : A.x0 > B.x1 ? A.x0 - B.x1 : 0;
+        if (gx <= gap) par[find(order[a])] = find(order[b]);
+      }
+    }
+    const lines = new Map();
+    segs.forEach((s, i) => {
+      const r = find(i);
+      const L = lines.get(r) || { x0: w, x1: 0, y0: h, y1: 0, ink: 0, members: [] };
+      L.x0 = Math.min(L.x0, s.x0); L.x1 = Math.max(L.x1, s.x1); L.y0 = Math.min(L.y0, s.y0); L.y1 = Math.max(L.y1, s.y1);
+      L.ink += s.ink; L.members.push(i); lines.set(r, L);
+    });
+    const all = [...lines.values()].filter((L) => L.y1 - L.y0 < hMax || L.x1 - L.x0 > w * 0.2);
+    // tâm cột chính: trung vị (theo trọng số độ dài²) của tâm các dòng
+    const ws = all.map((L) => ({ c: (L.x0 + L.x1) / 2, wt: (L.x1 - L.x0) ** 2 })).sort((a, b) => a.c - b.c);
+    const tw = ws.reduce((s, v) => s + v.wt, 0);
+    let acc = 0, cx = w / 2;
+    for (const v of ws) { acc += v.wt; if (acc >= tw / 2) { cx = v.c; break; } }
+    const core = all.filter((L) => L.x0 <= cx && L.x1 >= cx && L.x1 - L.x0 >= w * 0.25);
+    const inkAll = all.reduce((s, L) => s + L.ink, 0), inkCore = core.reduce((s, L) => s + L.ink, 0);
+    if (!core.length || inkCore < inkAll * 0.3) return ink;
+    const keep = new Set(core);
+    const tol = w * 0.012, near = h * 0.08;
+    for (const L of all) {
+      if (keep.has(L)) continue;
+      let lx0 = w, lx1 = 0;
+      for (const C of core) if (C.y1 >= L.y0 - near && C.y0 <= L.y1 + near) { lx0 = Math.min(lx0, C.x0); lx1 = Math.max(lx1, C.x1); }
+      if (lx1 < lx0) continue; // không có dòng chính nào gần -> ngoài trang
+      if (L.x1 >= lx0 - tol && L.x0 <= lx1 + tol && L.x0 >= lx0 - w * 0.06) keep.add(L);
+    }
+    const keepSeg = new Uint8Array(segs.length + 1);
+    for (const L of keep) for (const i of L.members) keepSeg[i + 1] = 1;
+    const out = new Uint8Array(n);
+    for (let p = 0; p < n; p++) if (ink[p] && keepSeg[lab[p]]) out[p] = 1;
+    return out;
+  }
+
+  // Cắt phần chữ của trang bên cạnh: tìm rãnh trống (dải cột/hàng không có chữ) trong khối;
+  // phần bên kia rãnh mà chạm mép ảnh và ít chữ hơn -> bỏ.
+  function trimAtGutter(mask, ink, w, h) {
+    for (const vertical of [true, false]) {
+      const L = vertical ? w : h, M = vertical ? h : w;
+      const prof = new Float32Array(L);
+      let total = 0;
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const p = y * w + x;
+        if (mask[p] && ink[p]) { prof[vertical ? x : y]++; total++; }
+      }
+      if (!total) return;
+      let a = 0, b = L - 1;
+      while (a < L && !prof[a]) a++;
+      while (b > a && !prof[b]) b--;
+      const minRun = Math.max(3, Math.round(L * 0.008)), empty = M * 0.002;
+      // các rãnh trống bên trong khối
+      const gutters = [];
+      for (let i = a; i <= b;) {
+        if (prof[i] <= empty) { let j = i; while (j <= b && prof[j] <= empty) j++; if (j - i >= minRun) gutters.push([i, j]); i = j; } else i++;
+      }
+      const edge = Math.round(L * 0.015);
+      let cutLo = -1, cutHi = L;
+      for (const [i, j] of gutters) {
+        let before = 0, after = 0;
+        for (let k = a; k < i; k++) before += prof[k];
+        for (let k = j; k <= b; k++) after += prof[k];
+        if (a <= edge && before < total * 0.4) cutLo = Math.max(cutLo, j - 1);     // phần trước rãnh chạm mép đầu
+        if (b >= L - 1 - edge && after < total * 0.4) cutHi = Math.min(cutHi, i);   // phần sau rãnh chạm mép cuối
+      }
+      if (cutLo < 0 && cutHi >= L) continue;
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const t = vertical ? x : y;
+        if (t <= cutLo || t >= cutHi) mask[y * w + x] = 0;
+      }
+    }
+  }
+
+  // Chọn cách nhận: 'text' = theo vùng chữ (mặc định cho tài liệu), 'paper' = theo mép giấy (thẻ, ảnh)
+  function detectAuto(src, mode, fast) {
+    // cùng độ phân giải 480 cho camera và ảnh đã chụp -> khung trên camera = khung cắt sau khi chụp
+    if (mode === 'text') return detectContent(src, 480) || detect(src, fast ? 256 : 360);
+    return detect(src, fast ? 256 : 360);
+  }
+
+  // ---------- LÀM PHẲNG trang cong (theo dòng chữ) ----------
+  // Chia trang thành các dải dọc, so độ lệch dọc của dòng chữ giữa các dải cạnh nhau, cộng dồn từ giữa ra
+  // -> trường dịch chuyển D(x, y) mượt (đa thức bậc 2 theo x, nội suy theo y) -> kéo dòng chữ thẳng lại.
+  function flatten(canvas) {
+    const A = 760;
+    const { g, ch, w, h } = grayOf(canvas, A);
+    const ink = inkMask(g, w, h, ch);
+    // vùng có chữ theo chiều ngang / dọc
+    const colSum = new Float32Array(w), rowSum = new Float32Array(h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const v = ink[y * w + x]; colSum[x] += v; rowSum[y] += v; }
+    const firstLast = (arr, thr) => { let a = 0, b = arr.length - 1; while (a < b && arr[a] < thr) a++; while (b > a && arr[b] < thr) b--; return [a, b]; };
+    const [tx0, tx1] = firstLast(colSum, h * 0.01), [ty0, ty1] = firstLast(rowSum, w * 0.01);
+    if (tx1 - tx0 < w * 0.4 || ty1 - ty0 < h * 0.3) return canvas;
+    const NS = 12, NB = 4, sw = (tx1 - tx0) / NS;
+    // hồ sơ hàng của từng dải
+    const P = [];
+    for (let s = 0; s < NS; s++) {
+      const a = Math.round(tx0 + s * sw), b = Math.round(tx0 + (s + 1) * sw), pr = new Float32Array(h);
+      for (let y = 0; y < h; y++) { let t = 0; for (let x = a; x < b; x++) t += ink[y * w + x]; pr[y] = t; }
+      P.push(boxBlur(pr, h, 1, 1));
+    }
+    // khoảng cách dòng (tự tương quan của hồ sơ tổng)
+    const tot = new Float32Array(h); for (const pr of P) for (let y = 0; y < h; y++) tot[y] += pr[y];
+    let mean = 0; for (let y = ty0; y <= ty1; y++) mean += tot[y]; mean /= (ty1 - ty0 + 1);
+    let bestLag = 0, bestAc = 0, prevAc = Infinity, descending = true;
+    for (let lag = 4; lag < (ty1 - ty0) / 3; lag++) {
+      let ac = 0; for (let y = ty0; y + lag <= ty1; y++) ac += (tot[y] - mean) * (tot[y + lag] - mean);
+      if (descending) { if (ac > prevAc) descending = false; prevAc = ac; continue; }
+      if (ac > bestAc) { bestAc = ac; bestLag = lag; } else if (bestLag && ac < bestAc * 0.7) break;
+    }
+    if (!bestLag) return canvas;
+    const maxShift = Math.max(1, Math.round(bestLag * 0.4));
+    const bandH = (ty1 - ty0) / NB;
+    const bandC = [], fits = [];
+    for (let bnd = 0; bnd < NB; bnd++) {
+      const ya = Math.round(ty0 + bnd * bandH), yb = Math.round(ty0 + (bnd + 1) * bandH);
+      bandC.push((ya + yb) / 2);
+      // độ lệch giữa dải s và s+1 trong băng này
+      const step = [], conf = [];
+      for (let s = 0; s < NS - 1; s++) {
+        let bd = 0, bv = -1, n0 = 0, n1 = 0;
+        for (let y = ya; y < yb; y++) { n0 += P[s][y] * P[s][y]; n1 += P[s + 1][y] * P[s + 1][y]; }
+        for (let dd = -maxShift; dd <= maxShift; dd++) {
+          let v = 0; for (let y = ya; y < yb; y++) { const yy = y + dd; if (yy >= 0 && yy < h) v += P[s][y] * P[s + 1][yy]; }
+          if (v > bv) { bv = v; bd = dd; }
+        }
+        const c = n0 && n1 ? bv / Math.sqrt(n0 * n1) : 0;
+        step.push(c > 0.35 ? bd : 0); conf.push(c > 0.35 ? c : 0);
+      }
+      // cộng dồn từ dải giữa ra hai bên
+      const mid = NS >> 1, D = new Float32Array(NS), W = new Float32Array(NS);
+      W[mid] = 1;
+      for (let s = mid; s < NS - 1; s++) { D[s + 1] = D[s] + step[s]; W[s + 1] = conf[s]; }
+      for (let s = mid - 1; s >= 0; s--) { D[s] = D[s + 1] - step[s]; W[s] = conf[s]; }
+      // khớp đa thức bậc 2 có trọng số: D(x) = c0 + c1 t + c2 t², t = vị trí chuẩn hoá -1..1
+      let S = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], Y = [0, 0, 0];
+      for (let s = 0; s < NS; s++) {
+        const t = ((tx0 + (s + 0.5) * sw) - w / 2) / (w / 2), v = [1, t, t * t], wt = W[s];
+        for (let i = 0; i < 3; i++) { Y[i] += wt * v[i] * D[s]; for (let j = 0; j < 3; j++) S[i][j] += wt * v[i] * v[j]; }
+      }
+      fits.push(solve3(S, Y) || [0, 0, 0]);
+    }
+    // độ cong đáng kể không?
+    let maxD = 0;
+    for (const f of fits) for (const t of [-1, -0.5, 0, 0.5, 1]) maxD = Math.max(maxD, Math.abs(f[1] * t + f[2] * t * t));
+    if (maxD < 1.2) return canvas; // trang vốn đã phẳng
+    // áp dụng lên ảnh đầy đủ
+    const W2 = canvas.width, H2 = canvas.height, f = W2 / w;
+    const lim = H2 * 0.06;
+    const Db = fits.map((c) => {
+      const arr = new Float32Array(W2);
+      for (let x = 0; x < W2; x++) { const t = (x / f - w / 2) / (w / 2); let v = (c[1] * t + c[2] * t * t) * f; arr[x] = Math.max(-lim, Math.min(lim, v)); }
+      return arr;
+    });
+    if (!canvas._px) canvas._px = canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, W2, H2).data;
+    const sd = canvas._px, out = makeCanvas(W2, H2), octx = out.getContext('2d'), od = octx.createImageData(W2, H2), o = od.data;
+    const off = new Float32Array(W2), row = W2 * 4;
+    let i = 0;
+    for (let y = 0; y < H2; y++) {
+      const ya = y / f; let bi = 0;
+      while (bi < NB - 2 && ya > bandC[bi + 1]) bi++;
+      let t = (ya - bandC[bi]) / (bandC[bi + 1] - bandC[bi]); t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const A0 = Db[bi], A1 = Db[bi + 1];
+      for (let x = 0; x < W2; x++) off[x] = A0[x] * (1 - t) + A1[x] * t;
+      for (let x = 0; x < W2; x++, i += 4) {
+        let sy = y + off[x]; if (sy < 0) sy = 0; else if (sy > H2 - 1.001) sy = H2 - 1.001;
+        const iy = sy | 0, fy = sy - iy, p = (iy * W2 + x) << 2, p2 = p + row;
+        o[i] = sd[p] * (1 - fy) + sd[p2] * fy;
+        o[i + 1] = sd[p + 1] * (1 - fy) + sd[p2 + 1] * fy;
+        o[i + 2] = sd[p + 2] * (1 - fy) + sd[p2 + 2] * fy;
+        o[i + 3] = 255;
+      }
+    }
+    octx.putImageData(od, 0, 0);
+    return out;
+  }
+
+  // ---------- TẨY NỀN NGOÀI NỘI DUNG ----------
+  // Sau khi làm nét: tìm khung bao quanh chữ (bỏ mẩu chữ/vệt tối chạm mép ảnh), nới lề,
+  // rồi tô trắng toàn bộ phần bên ngoài -> mất hẳn bàn ghế, bóng tay, mép sách còn sót ở rìa.
+  function cleanBorder(canvas) {
+    const { g, ch, w, h } = grayOf(canvas, 600);
+    let ink = inkMask(g, w, h, ch, true);
+    ink = dropCutOffLines(ink, w, h);
+    // chỉ tính nét thuộc cụm chữ thật (đoạn có ≥ 12 điểm), bỏ chấm nhiễu lẻ tẻ -> giữ được chữ nhỏ ở rìa như "Trang 1"
+    const seg = dilateBox(ink, w, h, Math.max(2, Math.round(w * 0.006)), 1);
+    const lab = new Int32Array(w * h), size = [0], stack = new Int32Array(w * h);
+    for (let s = 0; s < w * h; s++) {
+      if (!seg[s] || lab[s]) continue;
+      const id = size.length; let sp = 0, cnt = 0;
+      stack[sp++] = s; lab[s] = id;
+      while (sp) {
+        const p = stack[--sp], x = p % w, y = (p / w) | 0; cnt += ink[p];
+        if (x > 0 && seg[p - 1] && !lab[p - 1]) { lab[p - 1] = id; stack[sp++] = p - 1; }
+        if (x < w - 1 && seg[p + 1] && !lab[p + 1]) { lab[p + 1] = id; stack[sp++] = p + 1; }
+        if (y > 0 && seg[p - w] && !lab[p - w]) { lab[p - w] = id; stack[sp++] = p - w; }
+        if (y < h - 1 && seg[p + w] && !lab[p + w]) { lab[p + w] = id; stack[sp++] = p + w; }
+      }
+      size.push(cnt);
+    }
+    const cols = new Float32Array(w), rows = new Float32Array(h);
+    let tot = 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      if (ink[p] && size[lab[p]] >= 12) { cols[x]++; rows[y]++; tot++; }
+    }
+    if (tot < w * h * 0.003) return canvas;
+    const range = (arr) => {
+      let a = 0, b = arr.length - 1;
+      while (a < b && !arr[a]) a++;
+      while (b > a && !arr[b]) b--;
+      return [a, b];
+    };
+    const [x0, x1] = range(cols), [y0, y1] = range(rows);
+    if ((x1 - x0) * (y1 - y0) < w * h * 0.2) return canvas;
+    const pad = Math.max(w, h) * 0.02, f = canvas.width / w;
+    const X0 = Math.max(0, (x0 - pad) * f), X1 = Math.min(canvas.width, (x1 + 1 + pad) * f);
+    const Y0 = Math.max(0, (y0 - pad) * f), Y1 = Math.min(canvas.height, (y1 + 1 + pad) * f);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, Y0);
+    ctx.fillRect(0, Y1, canvas.width, canvas.height - Y1);
+    ctx.fillRect(0, Y0, X0, Y1 - Y0);
+    ctx.fillRect(X1, Y0, canvas.width - X1, Y1 - Y0);
+    return canvas;
+  }
+
+  function solve3(M, b) {
+    const a = M.map((r, i) => [...r, b[i]]);
+    for (let c = 0; c < 3; c++) {
+      let p = c; for (let r = c + 1; r < 3; r++) if (Math.abs(a[r][c]) > Math.abs(a[p][c])) p = r;
+      if (Math.abs(a[p][c]) < 1e-9) return null;
+      [a[c], a[p]] = [a[p], a[c]];
+      for (let r = 0; r < 3; r++) if (r !== c) { const k = a[r][c] / a[c][c]; for (let j = c; j < 4; j++) a[r][j] -= k * a[c][j]; }
+    }
+    return [a[0][3] / a[0][0], a[1][3] / a[1][1], a[2][3] / a[2][2]];
   }
 
   function orderQuad(q) {
@@ -485,10 +967,13 @@ const Scan = (() => {
     const base = await loadToCanvas(job.src);
     const c = rotate(base, job.rot || 0);
     const q = job.corners.map(([u, v]) => [u * c.width, v * c.height]);
-    const full = applyFilter(warp(c, q, job.size || null), job.filter);
+    let flat = warp(c, q, job.size || null);
+    if (job.flatten) flat = flatten(flat);
+    let full = applyFilter(flat, job.filter);
+    if (job.clean) full = cleanBorder(full);
     const out = await toBlob(full, job.quality);
     return { out, w: full.width, h: full.height };
   }
 
-  return { makeCanvas, loadToCanvas, rotate, rotateCorners, detect, warp, applyFilter, toBlob, processFull, FULL };
+  return { makeCanvas, loadToCanvas, rotate, rotateCorners, detect, detectContent, detectAuto, warp, flatten, cleanBorder, applyFilter, toBlob, processFull, FULL };
 })();

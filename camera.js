@@ -4,7 +4,7 @@ const Camera = (() => {
   const supported = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
   let stream = null, track = null, imageCapture = null;
   let opened = false, paused = false, busy = false;
-  let quad = null, missed = 0, stableSince = 0, lastQuad = null, loopT = 0, torchOn = false;
+  let quad = null, missed = 0, stableSince = 0, lastQuad = null, loopT = 0, torchOn = false, cost = 40;
   // Chống chụp trùng: sau mỗi lần chụp, chỉ tự chụp lại khi đã sang trang khác
   let armed = true, shotSig = null, shotQuad = null, goneFrames = 0;
   // "Dấu vân tay" nội dung trang: nắn phẳng phần giấy về 36×48 điểm rồi chuẩn hoá độ sáng.
@@ -32,6 +32,8 @@ const Camera = (() => {
   const overlay = () => $('camOverlay');
 
   const auto = () => localStorage.getItem('autoShot') !== '0';
+  // Thẻ/CCCD: nhận theo mép thẻ; tài liệu: theo vùng chữ (mặc định) hoặc mép giấy (người dùng chọn)
+  const detectMode = () => (localStorage.getItem('cardMode') === '1' ? 'paper' : (localStorage.getItem('detectMode') || 'text'));
 
   async function open(callbacks) {
     cb = callbacks || {};
@@ -79,13 +81,17 @@ const Camera = (() => {
   function loop(ts) {
     if (!opened) return;
     requestAnimationFrame(loop);
-    if (paused || busy || ts - loopT < 110) return;
+    // nhịp dò tự giãn theo tốc độ máy (máy chậm -> dò thưa hơn, hình camera vẫn mượt)
+    if (paused || busy || ts - loopT < Math.max(110, cost * 2.5)) return;
     loopT = ts;
     const v = video();
     if (!v.videoWidth) return;
     let q = null;
-    try { q = Scan.detect(v, 256); } catch (e) { q = null; }
+    const t0 = performance.now();
+    // cùng một cách nhận diện với bước cắt sau khi chụp -> khung xanh = vùng cắt thật
+    try { q = Scan.detectAuto(v, detectMode(), true); } catch (e) { q = null; }
     const now = performance.now();
+    cost = cost * 0.7 + (now - t0) * 0.3;
     if (q) {
       missed = 0;
       if (quad) q = q.map((p, i) => [quad[i][0] * 0.55 + p[0] * 0.45, quad[i][1] * 0.55 + p[1] * 0.45]); // làm mượt
@@ -205,5 +211,5 @@ const Camera = (() => {
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind); else bind();
 
-  return { supported, open, close, pause, resume, setCount, isOpen: () => opened, updateMode };
+  return { supported, open, close, pause, resume, setCount, isOpen: () => opened, updateMode, detectMode };
 })();
