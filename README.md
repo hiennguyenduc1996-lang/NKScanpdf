@@ -6,6 +6,6 @@
 - Android (Chrome): bấm **Cài app**.
 - iPhone (Safari): nút Chia sẻ → **Thêm vào MH chính**.
 
-**Cập nhật phiên bản mới:** tải đè các tệp lên repo, rồi tăng số `CACHE` trong `sw.js` để điện thoại nhận bản mới.
+**Cập nhật phiên bản mới:** tải đè các tệp lên repo; tăng `APP_VERSION` trong `app.js` và số `CACHE` trong `sw.js` cùng một số (vd. 15.0 ↔ `nkscanpdf-v15`). Số phiên bản hiện trên thanh tiêu đề, dòng tác giả và trong Hướng dẫn.
 
 Tác giả: Nguyễn Đức Hiền · THCS & THPT Nguyễn Khuyến

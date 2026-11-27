@@ -1,5 +1,9 @@
 // NKScanpdf — giao diện & luồng chính.
+// SỐ PHIÊN BẢN: mỗi lần phát hành tăng 1, đồng thời đổi CACHE trong sw.js thành 'nkscanpdf-v<số>'.
+const APP_VERSION = '14.0';
 (() => {
+  // hiện số phiên bản thật (thay cho số ghi cố định trong trang)
+  document.querySelectorAll('.app-ver').forEach((el) => { el.textContent = 'v' + APP_VERSION; });
   const $ = (id) => document.getElementById(id);
   const show = (el, on = true) => el.classList.toggle('hidden', !on);
   // Chờ 1 khung hình để vòng xoay "Đang xử lý" kịp hiện — nhưng không bao giờ chờ quá 50 ms

@@ -1,5 +1,5 @@
 // Service worker: cache app shell so the app opens and works offline.
-const CACHE = 'nkscanpdf-v13';
+const CACHE = 'nkscanpdf-v14'; // khớp APP_VERSION trong app.js
 const SHELL = [
   './detect-worker.js',
   './camera.js',
