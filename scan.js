@@ -595,11 +595,187 @@ const Scan = (() => {
     }
   }
 
+  // ---------- Nhận diện theo CẠNH THẲNG (mép giấy / mép thẻ) ----------
+  // 1) gradient độ sáng + độ màu (Sobel) -> điểm biên (lọc cực đại theo hướng)
+  // 2) Hough có ràng buộc hướng: mỗi điểm biên chỉ bỏ phiếu cho đường gần vuông góc với gradient của nó
+  // 3) lấy các đường mạnh, ghép 2 cặp gần song song thành tứ giác
+  // 4) chấm điểm: tỉ lệ chiều dài mỗi cạnh nằm trên biên thật cùng hướng (chịu được ngón tay che một phần)
+  function edgeQuads(src, S, opt = {}) {
+    const { g, ch, w, h } = grayOf(src, S);
+    const n = w * h;
+    const G = boxBlur(g, w, h, 1), C = boxBlur(ch, w, h, 1);
+    const mag = new Float32Array(n), ang = new Float32Array(n);
+    for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const gx = (G[i - w + 1] + 2 * G[i + 1] + G[i + w + 1]) - (G[i - w - 1] + 2 * G[i - 1] + G[i + w - 1]);
+      const gy = (G[i + w - 1] + 2 * G[i + w] + G[i + w + 1]) - (G[i - w - 1] + 2 * G[i - w] + G[i - w + 1]);
+      const cx = (C[i - w + 1] + 2 * C[i + 1] + C[i + w + 1]) - (C[i - w - 1] + 2 * C[i - 1] + C[i + w - 1]);
+      const cy = (C[i + w - 1] + 2 * C[i + w] + C[i + w + 1]) - (C[i - w - 1] + 2 * C[i - w] + C[i - w + 1]);
+      const m1 = Math.hypot(gx, gy), m2 = Math.hypot(cx, cy) * 1.3; // độ khác màu cũng là biên (thẻ xanh trên bàn be)
+      if (m1 >= m2) { mag[i] = m1; ang[i] = Math.atan2(gy, gx); } else { mag[i] = m2; ang[i] = Math.atan2(cy, cx); }
+    }
+    // ngưỡng: phân vị 88%, kẹp trong [16, 48] -> chữ đậm trong trang không đẩy ngưỡng lên cao làm mất mép giấy nhạt
+    const hist = new Uint32Array(512);
+    for (let i = 0; i < n; i++) hist[Math.min(511, mag[i] | 0)]++;
+    let acc = 0, t = 20;
+    for (let v = 0; v < 512; v++) { acc += hist[v]; if (acc >= n * 0.88) { t = Math.max(16, Math.min(48, v)); break; } }
+    // lọc cực đại theo hướng gradient -> biên mảnh
+    const edge = new Uint8Array(n);
+    let cnt = 0;
+    for (let y = 2; y < h - 2; y++) for (let x = 2; x < w - 2; x++) {
+      const i = y * w + x, m = mag[i];
+      if (m < t) continue;
+      const a = ang[i], dx = Math.round(Math.cos(a)), dy = Math.round(Math.sin(a));
+      if (m >= mag[i + dy * w + dx] && m >= mag[i - dy * w - dx]) { edge[i] = 1; cnt++; }
+    }
+    if (cnt < 50) return [];
+    // Hough có ràng buộc hướng
+    const NT = 180, diag = Math.ceil(Math.hypot(w, h)), NR = 2 * diag + 1;
+    const H = new Float32Array(NT * NR);
+    const cosT = new Float32Array(NT), sinT = new Float32Array(NT);
+    for (let k = 0; k < NT; k++) { cosT[k] = Math.cos(k * Math.PI / NT); sinT[k] = Math.sin(k * Math.PI / NT); }
+    const SPREAD = 6;
+    for (let y = 2; y < h - 2; y++) for (let x = 2; x < w - 2; x++) {
+      const i = y * w + x; if (!edge[i]) continue;
+      let th = ang[i]; if (th < 0) th += Math.PI; // pháp tuyến đường thẳng = hướng gradient (mod 180°)
+      const k0 = Math.round(th * NT / Math.PI);
+      const wt = Math.min(2, mag[i] / t);
+      for (let dk = -SPREAD; dk <= SPREAD; dk++) {
+        const k = (k0 + dk + NT) % NT;
+        const r = Math.round(x * cosT[k] + y * sinT[k]) + diag;
+        H[k * NR + r] += wt;
+      }
+    }
+    // đỉnh: cực đại cục bộ, đủ dài
+    const minVotes = Math.min(w, h) * 0.14;
+    const peaks = [];
+    for (let k = 0; k < NT; k++) for (let r = 0; r < NR; r++) {
+      const v = H[k * NR + r]; if (v < minVotes) continue;
+      let isMax = true;
+      for (let dk = -3; dk <= 3 && isMax; dk++) for (let dr = -6; dr <= 6; dr++) {
+        if (!dk && !dr) continue;
+        let kk = k + dk, rr = r + dr;
+        if (kk < 0) { kk += NT; rr = NR - 1 - rr; } else if (kk >= NT) { kk -= NT; rr = NR - 1 - rr; }
+        if (rr < 0 || rr >= NR) continue;
+        if (H[kk * NR + rr] > v) { isMax = false; break; }
+      }
+      if (isMax) peaks.push({ k, r: r - diag, v });
+    }
+    peaks.sort((a, b) => b.v - a.v);
+    const L = peaks.slice(0, 22).map((p) => ({ th: p.k * Math.PI / NT, c: cosT[p.k], s: sinT[p.k], r: p.r, v: p.v }));
+    if (L.length < 4) return [];
+    // cặp đường gần song song, cách nhau đủ xa
+    const angDiff = (a, b) => { let d = Math.abs(a - b) % Math.PI; return Math.min(d, Math.PI - d); };
+    const midDist = (a, b) => { // khoảng cách 2 đường đo tại tâm ảnh
+      const px = w / 2, py = h / 2;
+      return Math.abs((px * a.c + py * a.s - a.r) - (px * b.c + py * b.s - b.r) * Math.sign(a.c * b.c + a.s * b.s || 1));
+    };
+    const pairs = [];
+    for (let i = 0; i < L.length; i++) for (let j = i + 1; j < L.length; j++) {
+      if (angDiff(L[i].th, L[j].th) > 0.35) continue;
+      if (midDist(L[i], L[j]) < Math.min(w, h) * 0.12) continue;
+      pairs.push([L[i], L[j]]);
+    }
+    const inter = (a, b) => { const d = a.c * b.s - a.s * b.c; if (Math.abs(d) < 1e-6) return null; return [(a.r * b.s - b.r * a.s) / d, (b.r * a.c - a.r * b.c) / d]; };
+    // điểm hỗ trợ của 1 cạnh: tỉ lệ điểm mẫu có biên mạnh cùng hướng (trong ±2px)
+    // + "độ chênh 2 bên": mép giấy thật thì 2 bên khác hẳn nhau (giấy | bàn); dòng chữ thì 2 bên đều là giấy
+    const strong = t * 0.55, OFF = 5;
+    function sideSupport(P, Q) {
+      const len = Math.hypot(Q[0] - P[0], Q[1] - P[1]); if (len < 4) return { s: 0, inside: 0, step: 0 };
+      const nx = -(Q[1] - P[1]) / len, ny = (Q[0] - P[0]) / len;
+      const N = Math.max(8, Math.floor(len / 2));
+      let hit = 0, inside = 0, stepSum = 0, stepN = 0;
+      for (let k = 0; k <= N; k++) {
+        const f = 0.04 + 0.92 * k / N; // bỏ sát góc (góc thẻ bo tròn)
+        const x0 = P[0] + (Q[0] - P[0]) * f, y0 = P[1] + (Q[1] - P[1]) * f;
+        if (x0 < 2 || y0 < 2 || x0 > w - 3 || y0 > h - 3) continue;
+        inside++;
+        for (let o = -2; o <= 2; o++) {
+          const i = Math.round(y0 + ny * o) * w + Math.round(x0 + nx * o);
+          if (mag[i] > strong && Math.abs(Math.cos(ang[i]) * nx + Math.sin(ang[i]) * ny) > 0.85) { hit++; break; }
+        }
+        const xa = Math.round(x0 + nx * OFF), ya = Math.round(y0 + ny * OFF), xb = Math.round(x0 - nx * OFF), yb = Math.round(y0 - ny * OFF);
+        if (xa >= 0 && ya >= 0 && xa < w && ya < h && xb >= 0 && yb >= 0 && xb < w && yb < h) {
+          const ia = ya * w + xa, ib = yb * w + xb;
+          stepSum += Math.abs(G[ia] - G[ib]) + 0.8 * Math.abs(C[ia] - C[ib]); stepN++;
+        }
+      }
+      return { s: inside ? hit / inside : 0, inside: inside / (N + 1), step: stepN ? stepSum / stepN : 0 };
+    }
+    const cands = [];
+    for (let a = 0; a < pairs.length; a++) for (let b = a + 1; b < pairs.length; b++) {
+      const [l1, l2] = pairs[a], [l3, l4] = pairs[b];
+      if (l1 === l3 || l1 === l4 || l2 === l3 || l2 === l4) continue;
+      const cross = angDiff(l1.th, l3.th);
+      if (cross < 0.9) continue; // 2 cặp phải gần vuông góc (> ~52°)
+      const pts = [inter(l1, l3), inter(l3, l2), inter(l2, l4), inter(l4, l1)];
+      if (pts.some((p) => !p || p[0] < -0.08 * w || p[0] > 1.08 * w || p[1] < -0.08 * h || p[1] > 1.08 * h)) continue;
+      const q = orderQuad(pts);
+      if (!isConvexQuad(q)) continue;
+      const area = Math.abs(polyArea(q));
+      if (area < n * (opt.card ? 0.03 : 0.06)) continue;
+      let sum = 0, minS = 1, inS = 0, minStep = 1e9;
+      for (let e = 0; e < 4; e++) { const r = sideSupport(q[e], q[(e + 1) % 4]); sum += r.s; minS = Math.min(minS, r.s); inS += r.inside; minStep = Math.min(minStep, r.step); }
+      if (inS < 2.4) continue; // phần lớn tứ giác phải nằm trong ảnh
+      let score = sum / 4;
+      if (minS < 0.2) score *= 0.55; // 1 cạnh gần như không có biên -> đáng ngờ
+      score *= Math.min(1, minStep / 12); // có cạnh mà 2 bên giống hệt nhau (dòng chữ) -> khung giả
+      score *= 0.85 + 0.15 * Math.min(1, area / (n * 0.5));
+      if (opt.card) { // tỉ lệ thẻ ID-1 = 1,586
+        const sl = [0, 1, 2, 3].map((e) => Math.hypot(q[(e + 1) % 4][0] - q[e][0], q[(e + 1) % 4][1] - q[e][1]));
+        const A = (sl[0] + sl[2]) / 2, B = (sl[1] + sl[3]) / 2, ratio = Math.max(A, B) / Math.min(A, B);
+        score *= 0.6 + 0.4 * Math.exp(-(((ratio - 1.586) / 0.22) ** 2));
+        score *= 0.65 + 0.35 * Math.min(1, area / (n * 0.25)); // ưu tiên khung thẻ bên ngoài, không phải ô ảnh bên trong
+      }
+      cands.push({ q: q.map(([x, y]) => [clamp01(x / w), clamp01(y / h)]), score, area: area / n });
+    }
+    cands.sort((a, b) => b.score - a.score);
+    return cands.slice(0, 12);
+  }
+
+  // tỉ lệ các điểm của tứ giác A nằm trong tứ giác B (A đã chuẩn hoá)
+  function containFrac(A, B) {
+    const inside = (p) => { let s = 0; for (let i = 0; i < 4; i++) { const a = B[i], b = B[(i + 1) % 4]; const c = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]); if (c !== 0) { const sg = Math.sign(c); if (s && sg !== s) return false; s = sg; } } return true; };
+    let k = 0, tot = 0;
+    for (let i = 0; i < 4; i++) for (let f = 0; f < 1; f += 0.25) {
+      const a = A[i], b = A[(i + 1) % 4]; tot++;
+      if (inside([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f])) k++;
+    }
+    return k / tot;
+  }
+
   // Chọn cách nhận: 'text' = theo vùng chữ (mặc định cho tài liệu), 'paper' = theo mép giấy (thẻ, ảnh)
+  // mode: 'auto' (tài liệu, mặc định) | 'paper' (chỉ mép giấy) | 'text' (chỉ vùng chữ) | 'card' (CCCD / thẻ)
+  // Dùng CÙNG độ phân giải cho camera và ảnh đã chụp -> khung trên camera = khung cắt sau khi chụp.
   function detectAuto(src, mode, fast) {
-    // cùng độ phân giải 480 cho camera và ảnh đã chụp -> khung trên camera = khung cắt sau khi chụp
-    if (mode === 'text') return detectContent(src, 480) || detect(src, fast ? 256 : 360);
-    return detect(src, fast ? 256 : 360);
+    const ES = 400; // camera và ảnh đã chụp dùng chung (dò chạy ở luồng nền nên không ảnh hưởng độ mượt)
+    if (mode === 'text') return detectContent(src, 480) || detect(src, 360);
+    if (mode === 'card') {
+      const c = edgeQuads(src, ES, { card: true });
+      if (c.length && c[0].score >= 0.42) return c[0].q;
+      return detect(src, 360);
+    }
+    const cands = edgeQuads(src, ES);
+    if (mode === 'paper') return cands.length && cands[0].score >= 0.42 ? cands[0].q : detect(src, 360);
+    // auto: mép giấy nếu thấy rõ VÀ ôm trọn khối chữ chính (sách mở -> đúng 1 trang); không thì cắt theo vùng chữ
+    const tq = detectContent(src, 480);
+    if (tq) {
+      // khối chữ thu nhỏ 15% về tâm (bỏ phần lề đã nới) để kiểm tra "mép giấy ôm trọn chữ"
+      const tcx = tq.reduce((s, p) => s + p[0], 0) / 4, tcy = tq.reduce((s, p) => s + p[1], 0) / 4;
+      const core = tq.map(([x, y]) => [tcx + (x - tcx) * 0.85, tcy + (y - tcy) * 0.85]);
+      const ta = Math.abs(polyArea(core));
+      for (const c of cands) {
+        if (c.score < 0.42) break;
+        const cf = containFrac(core, c.q);
+        // mép giấy rõ ràng (điểm cao) thì tin mép giấy, kể cả khi khối chữ dò lệch (bàn bừa bộn)
+        if (cf < 0.85 && !(c === cands[0] && c.score >= 0.8 && cf >= 0.3)) continue;
+        if (Math.abs(polyArea(c.q)) > ta * 3.4) continue;     // không lấy cả 2 trang sách / cả mặt bàn
+        return c.q;
+      }
+      return tq;
+    }
+    if (cands.length && cands[0].score >= 0.5) return cands[0].q;
+    return detect(src, 360);
   }
 
   // ---------- LÀM PHẲNG trang cong (theo dòng chữ) ----------
@@ -1057,5 +1233,5 @@ const Scan = (() => {
     return { out, w: full.width, h: full.height };
   }
 
-  return { makeCanvas, loadToCanvas, rotate, rotateCorners, detect, detectContent, detectAuto, warp, flatten, cleanBorder, applyFilter, toBlob, processFull, FULL };
+  return { makeCanvas, loadToCanvas, rotate, rotateCorners, detect, detectContent, detectAuto, edgeQuads, warp, flatten, cleanBorder, applyFilter, toBlob, processFull, FULL };
 })();

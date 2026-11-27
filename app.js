@@ -336,18 +336,20 @@
   cc.addEventListener('pointerup', endDrag);
   cc.addEventListener('pointercancel', endDrag);
 
-  // Nút đổi kiểu nhận diện: Theo chữ <-> Theo mép giấy (nhớ lựa chọn cho cả camera)
-  function updateDetectBtn() {
-    const m = session && session.card ? 'paper' : (localStorage.getItem('detectMode') || 'text');
-    $('cropAuto').querySelector('b').textContent = m === 'text' ? 'Theo chữ' : 'Theo mép';
-  }
+  // Nút đổi kiểu nhận diện (nhớ lựa chọn cho cả camera): Tự động -> Theo mép -> Theo chữ -> Tự động
+  const DM_LABEL = { auto: 'Tự động', paper: 'Theo mép', text: 'Theo chữ', card: 'Mép thẻ' };
+  const DM_TOAST = { auto: 'Tự động: mép giấy, không rõ thì theo vùng chữ', paper: 'Cắt theo mép giấy', text: 'Cắt theo vùng chữ', card: 'Nhận lại mép thẻ' };
+  const curMode = () => (session && session.card ? 'card' : (localStorage.getItem('detectMode2') || 'auto'));
+  function updateDetectBtn() { $('cropAuto').querySelector('b').textContent = DM_LABEL[curMode()]; }
   $('cropAuto').onclick = () => {
-    const cur = localStorage.getItem('detectMode') || 'text';
-    const next = session.card ? 'paper' : (cur === 'text' ? 'paper' : 'text');
-    if (!session.card) localStorage.setItem('detectMode', next);
+    let next = 'card';
+    if (!session.card) {
+      next = { auto: 'paper', paper: 'text', text: 'auto' }[curMode()] || 'auto';
+      localStorage.setItem('detectMode2', next);
+    }
     const q = Scan.detectAuto(session.canvas, next);
     updateDetectBtn();
-    if (q) { session.corners = q; drawCrop(); toast(next === 'text' ? 'Cắt theo vùng chữ' : 'Cắt theo mép giấy'); }
+    if (q) { session.corners = q; drawCrop(); toast(DM_TOAST[next]); }
     else toast('Không tự nhận được – hãy kéo 4 góc bằng tay');
   };
   $('cropFull').onclick = () => { session.corners = Scan.FULL(); drawCrop(); };

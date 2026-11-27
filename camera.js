@@ -34,7 +34,9 @@ const Camera = (() => {
   // Tự chụp: mặc định TẮT, người dùng bật bằng nút "Tự chụp"
   const auto = () => localStorage.getItem('autoShot') === '1';
   // Thẻ/CCCD: nhận theo mép thẻ; tài liệu: theo vùng chữ (mặc định) hoặc mép giấy (người dùng chọn)
-  const detectMode = () => (localStorage.getItem('cardMode') === '1' ? 'paper' : (localStorage.getItem('detectMode') || 'text'));
+  // Thẻ/CCCD: 'card'. Tài liệu: 'auto' (mép giấy + vùng chữ, mặc định), 'paper' hoặc 'text' nếu người dùng chọn.
+  // (khoá mới 'detectMode2' để máy đã lưu lựa chọn cũ cũng chuyển sang Tự động)
+  const detectMode = () => (localStorage.getItem('cardMode') === '1' ? 'card' : (localStorage.getItem('detectMode2') || 'auto'));
 
   async function open(callbacks) {
     cb = callbacks || {};
@@ -68,6 +70,7 @@ const Camera = (() => {
 
   function close() {
     opened = false;
+    quad = null; locked = false; hist = []; pend = []; anchor = null; lastQuad = null; stableSince = 0; missed = 0;
     if (stream) stream.getTracks().forEach((t) => t.stop());
     stream = null; track = null; imageCapture = null; torchOn = false;
     $('camTorch').classList.remove('on');
@@ -111,7 +114,6 @@ const Camera = (() => {
   async function detectFrame(v) {
     inflight = true;
     const mode = detectMode(), t0 = performance.now();
-    const allowPaper = !quad && missed > 6;
     let q = null;
     try {
       const w = getWorker();
@@ -121,12 +123,11 @@ const Camera = (() => {
         q = await new Promise((res) => {
           const id = ++dseq; dwait.set(id, res);
           setTimeout(() => { if (dwait.has(id)) { dwait.delete(id); res(null); } }, 4000); // không treo nếu luồng nền chậm
-          w.postMessage({ id, bmp, mode, allowPaper }, [bmp]);
+          w.postMessage({ id, bmp, mode }, [bmp]);
         });
         if (q === undefined) q = null; // luồng nền lỗi -> lần sau dò trên trang
       } else {
-        q = mode === 'text' ? Scan.detectContent(v, 400) : Scan.detect(v, 256);
-        if (!q && mode === 'text' && allowPaper) q = Scan.detect(v, 256);
+        q = Scan.detectAuto(v, mode, true);
       }
     } catch (e) { q = null; dwOk = false; }
     inflight = false;
